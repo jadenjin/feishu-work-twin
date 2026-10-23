@@ -5,6 +5,7 @@ import uuid
 from types import SimpleNamespace
 from loguru import logger
 from ..agent.backend import get_backend
+from ..agent.contracts import scoped_key
 from ..auth import LarkAuth
 from ..storage import Storage
 from ..config import DATA_DIR
@@ -17,9 +18,11 @@ class HubRuntime:
         self.storage = storage or Storage()
         self.hub = HubStore(self.storage)
         self.backend = backend or get_backend()
-        if backend is None and getattr(self.backend, "name", "") != "codex":
+        if backend is None and not getattr(
+            getattr(self.backend, "capabilities", None), "structured_output", False
+        ):
             raise ValueError(
-                "网页工作台需要 Codex 后端，请设置 LARKX_AGENT_BACKEND=codex 并完成 codex login"
+                "网页工作台需要支持结构化输出的 AI 后端，请配置 codex 或 compatible"
             )
         self.model_slots = asyncio.Semaphore(2)
         self.engine = WorkEngine(self)
@@ -30,6 +33,16 @@ class HubRuntime:
         self.last_analysis = ""
         self.tasks = set()
         self.observations = {}
+
+    async def generate(self, session, prompt, **kwargs):
+        auth = getattr(self.client, "auth", None)
+        account = getattr(auth, "user_id", "") or "local-owner"
+        region = getattr(getattr(auth, "region", None), "name", "")
+        return await self.backend.run(
+            session.partition(":")[0] + ":" + scoped_key(account, region, session),
+            prompt,
+            **kwargs,
+        )
 
     def spawn(self, coro):
         task = asyncio.create_task(coro)
@@ -53,6 +66,9 @@ class HubRuntime:
         for task in workers:
             task.cancel()
         await asyncio.gather(*list(self.tasks), *workers, return_exceptions=True)
+        close = getattr(self.backend, "aclose", None)
+        if close:
+            await close()
 
     async def bridge(self):
         try:
@@ -453,6 +469,7 @@ class HubRuntime:
             "queued_messages": queue,
             "active_calls": active,
             "model": getattr(self.backend, "model", ""),
+            "ai_usage": dict(getattr(self.backend, "metrics", {})),
             "automation_enabled": self.hub.setting("automation_enabled", "true")
             == "true",
             "own_rules": self.hub.setting("own_rules", DEFAULT_RULES),
