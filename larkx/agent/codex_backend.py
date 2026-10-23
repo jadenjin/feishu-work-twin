@@ -81,14 +81,34 @@ def failure_reason(stderr):
     return "unknown", "调用未成功，原因未能安全识别；不一定是登录或模型问题"
 
 
+def resolve_codex_executable():
+    """Re-resolve app-bundled CLI paths, which can disappear after app updates."""
+    configured = os.environ.get("LARKX_CODEX_PATH", "").strip()
+    for candidate in (configured, "codex"):
+        if not candidate:
+            continue
+        expanded = os.path.expandvars(os.path.expanduser(candidate))
+        if Path(expanded).is_file():
+            return str(Path(expanded).resolve())
+        found = shutil.which(expanded)
+        if found and Path(found).is_file():
+            return found
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        root = Path(os.environ["LOCALAPPDATA"]) / "OpenAI" / "Codex" / "bin"
+        candidates = [p for p in root.glob("*/codex.exe") if p.is_file()]
+        if candidates:
+            return str(max(candidates, key=lambda p: p.stat().st_mtime))
+    raise RuntimeError(
+        "未找到可用的 Codex CLI，配置路径可能已失效；请检查 LARKX_CODEX_PATH 或安装 Codex CLI"
+    )
+
+
 class CodexBackend(ModelBackend):
     name = "codex"
     capabilities = Capabilities(structured_output=True, images=True)
 
     def __init__(self):
-        self.executable = os.environ.get("LARKX_CODEX_PATH") or shutil.which("codex")
-        if not self.executable:
-            raise RuntimeError("未找到 Codex CLI，请先安装并执行 codex login")
+        self.executable = resolve_codex_executable()
         super().__init__(DATA_DIR / "codex_history")
         self.timeout = int(os.environ.get("LARKX_CODEX_TIMEOUT", "180"))
         self.model = os.environ.get("LARKX_CODEX_MODEL", "").strip()
@@ -100,6 +120,8 @@ class CodexBackend(ModelBackend):
         request = model_request.as_text()
         response_schema = model_request.response_schema
         images = model_request.images
+        if not Path(self.executable).is_file():
+            self.executable = resolve_codex_executable()
         with tempfile.TemporaryDirectory(prefix="larkx-codex-") as temp:
             output = Path(temp) / "reply.txt"
             args = [
