@@ -86,7 +86,7 @@ class WorkEngine:
     ):
         # Reply and observation paths must see the previous analysis' committed tasks.
         async with self.analysis_locks[str(msg["chat_id"])]:
-            return await self._process(
+            result = await self._process(
                 session_key,
                 msg,
                 body,
@@ -95,6 +95,9 @@ class WorkEngine:
                 send_reply and not overview_only,
                 overview_only=overview_only,
             )
+            if not overview_only:
+                self.runtime.processing.finish(msg.get("_batch") or [msg])
+            return result
 
     async def _process(
         self,

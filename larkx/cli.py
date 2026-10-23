@@ -316,7 +316,7 @@ async def _listen(args, auth):
             runtime.connection = 'connected'
             runtime.connection_error = ''
         client.on_connected = connected
-    st = Storage()
+    st = runtime.storage if runtime else Storage()
     cfg_agent = args.agent
     if cfg_agent and (not auth.user_id):
         await asyncio.to_thread(auth._fetch_profile)

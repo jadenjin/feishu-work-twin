@@ -95,17 +95,8 @@ class SessionWorker:
                 logger.error(f"处理消息异常 [{self.session_key}]: {e}")
                 workflow = getattr(self.dispatcher, "workflow", None)
                 if workflow:
-                    task = workflow.runtime.hub.create_task(
-                        {
-                            "title": "自动处理异常："
-                            + (msg.get("_chat_name") or self.session_key),
-                            "details": str(e),
-                            "chat_id": str(msg.get("chat_id") or ""),
-                            "priority": "high",
-                        }
-                    )
-                    workflow.runtime.hub.update_task(
-                        task["id"], {"status": "needs_attention"}
+                    workflow.runtime.processing.fail(
+                        msg.get("_batch") or [msg], str(e)
                     )
 
 

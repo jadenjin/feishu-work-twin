@@ -13,12 +13,14 @@ from .store import HubStore, DEFAULT_RULES, DEFAULT_SUFFIX
 from .engine import WorkEngine
 from .knowledge import WorkKnowledge
 from .work_context import WorkContext
+from .processing import MessageProcessing
 
 
 class HubRuntime:
     def __init__(self, storage=None, backend=None):
         self.storage = storage or Storage()
         self.hub = HubStore(self.storage)
+        self.processing = MessageProcessing(self.storage)
         self.backend = backend or get_backend()
         if backend is None and not getattr(
             getattr(self.backend, "capabilities", None), "structured_output", False
@@ -58,6 +60,7 @@ class HubRuntime:
     async def start(self):
         self.hub.recover_interrupted()
         self.hub.seed_existing()
+        self.processing.recover()
         self.spawn(self.bridge())
 
     async def stop(self):
@@ -106,6 +109,7 @@ class HubRuntime:
         msg["_human_handled"] = self.hub.human_paused(msg["chat_id"])
         if not is_own:
             self.hub.observe(msg, chat_name, sender_name)
+        self.processing.enqueue(msg)
         if is_own or (
             self.dispatcher
             and not self.dispatcher.should_handle(msg, self.client.auth.user_id)
@@ -118,21 +122,14 @@ class HubRuntime:
                 self.spawn(self.observe_batch(key))
 
     async def observe_batch(self, key):
+        batch = []
         try:
             await asyncio.sleep(3)
             batch = self.observations.pop(key, [])
             if batch:
                 await self.analyze_messages(batch)
         except Exception as e:
-            self.hub.create_task(
-                {
-                    "title": "会话分析异常",
-                    "details": str(e),
-                    "chat_id": key[0],
-                    "anchor": key[1],
-                    "priority": "high",
-                }
-            )
+            self.processing.fail(batch, str(e))
 
     async def analyze_messages(self, batch, *, overview_only=False):
         from ..agent.dispatcher import build_xml_message
