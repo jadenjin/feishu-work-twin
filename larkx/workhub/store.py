@@ -4,7 +4,7 @@ import os
 import hashlib
 import time
 from datetime import datetime
-from sqlalchemy import desc, select, func
+from sqlalchemy import desc, select, func, case
 from ..storage import Storage
 from ..storage.models import Message
 from .models import Persona, Conversation, Task, Memory, Action, Setting, Job
@@ -615,6 +615,44 @@ class HubStore:
                 record(r)
                 for r in s.query(Task).order_by(desc(Task.created_at)).limit(300).all()
             ]
+
+    def task(self, task_id):
+        """Lookup for operations must not depend on a dashboard display limit."""
+        with self.storage.Session() as session:
+            row = session.get(Task, task_id)
+            return record(row) if row else None
+
+    def work_tasks(self, limit=80, chat_id="", *, include_done=False):
+        """Select unfinished work before limiting, including old outstanding items."""
+        with self.storage.Session() as session:
+            query = session.query(Task)
+            if not include_done:
+                query = query.filter(Task.status != "done")
+            if chat_id:
+                query = query.filter(Task.chat_id == str(chat_id))
+            total = query.count()
+            unfinished = (
+                query.filter(Task.status != "done").count() if include_done else total
+            )
+            rows = (
+                query.order_by(
+                    case((Task.status == "done", 1), else_=0),
+                    case((Task.status == "needs_attention", 0), else_=1),
+                    case(
+                        ((Task.priority == "high") & (Task.status != "done"), 0),
+                        else_=1,
+                    ),
+                    desc(Task.updated_at),
+                    desc(Task.id),
+                )
+                .limit(limit)
+                .all()
+            )
+            return {
+                "items": [record(row) for row in rows],
+                "total": total,
+                "unfinished_total": unfinished,
+            }
 
     def task_counts(self):
         with self.storage.Session() as session:

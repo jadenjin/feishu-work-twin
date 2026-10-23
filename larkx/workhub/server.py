@@ -399,7 +399,7 @@ def create_app(runtime=None, start_bridge=True):
     @app.post("/api/tasks/{task_id}/reply")
     async def task_reply(task_id: int, body: SendBody, request: Request):
         r = hub(request)
-        task = next((t for t in r.hub.tasks() if t["id"] == task_id), None)
+        task = r.hub.task(task_id)
         if not task:
             raise HTTPException(404, "任务不存在")
         return await r.send(
@@ -409,7 +409,7 @@ def create_app(runtime=None, start_bridge=True):
     @app.post("/api/tasks/{task_id}/polish")
     async def task_polish(task_id: int, body: DraftBody, request: Request):
         r = hub(request)
-        if not any(t["id"] == task_id for t in r.hub.tasks()):
+        if not r.hub.task(task_id):
             raise HTTPException(404, "任务不存在")
         payload = json.dumps(
             {"task_id": task_id, "text": body.text, "instruction": body.instruction},

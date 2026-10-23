@@ -305,11 +305,8 @@ class WorkEngine:
         store = self.runtime.hub
         allowed = allowed_control_actions(text)
         conversations, personas = store.conversations(), store.personas()
-        all_tasks = store.tasks()
-        tasks = (
-            [t for t in all_tasks if t["status"] != "done"]
-            + [t for t in all_tasks if t["status"] == "done"]
-        )[:80]
+        work = store.work_tasks(include_done=True)
+        tasks = work["items"]
         chat_ids = {c["chat_id"] for c in conversations}
         profiles = {p["key"] for p in personas}
         task_by_id = {t["id"]: t for t in tasks}

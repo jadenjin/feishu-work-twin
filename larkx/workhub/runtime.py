@@ -437,9 +437,7 @@ class HubRuntime:
                 )
             elif kind == "task_draft":
                 payload = json.loads(text)
-                task = next(
-                    (t for t in self.hub.tasks() if t["id"] == payload["task_id"]), None
-                )
+                task = self.hub.task(payload["task_id"])
                 if not task:
                     raise ValueError("待办不存在")
                 result = await self.engine.polish_task(
