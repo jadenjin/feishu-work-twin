@@ -157,7 +157,7 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
 
         self.runtime.backend.run = model
         self.runtime.send = send
-        result = await self.runtime.engine.control("发送一条测试消息", "job")
+        result = await self.runtime.engine.control("给测试会话发送一条测试消息", "job")
         self.assertFalse(result["actions"][0]["ok"])
         self.assertEqual(result["actions"][0]["error"], "未确认")
 

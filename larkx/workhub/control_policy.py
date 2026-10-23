@@ -22,7 +22,7 @@ READ_REQUEST = re.compile(
 )
 
 
-def allowed_control_actions(text):
+def control_instruction(text):
     # Message payloads can contain e.g. “创建任务”; only the owner's command counts.
     instruction = re.sub(r'“[^”]*”|「[^」]*」|『[^』]*』|"[^"]*"|`[^`]*`', "", text)
     commands = []
@@ -31,7 +31,11 @@ def allowed_control_actions(text):
         commands.append(
             head if tail and re.search(OPERATIONS["send_message"], head, re.I) else line
         )
-    instruction = "\n".join(commands).strip()
+    return "\n".join(commands).strip()
+
+
+def allowed_control_actions(text):
+    instruction = control_instruction(text)
     allowed = set()
     for kind, pattern in OPERATIONS.items():
         if not re.search(pattern, instruction, re.I):

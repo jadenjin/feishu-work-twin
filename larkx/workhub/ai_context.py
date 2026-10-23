@@ -7,6 +7,29 @@ import re
 from .control_policy import allowed_control_actions
 
 
+def compact_records(rows, fields, *, budget, limit):
+    """Keep identifiers intact; explicitly flag omitted records and field tails."""
+    result, used, limited = [], 0, False
+    for source in rows:
+        item = {key: source.get(key) for key in fields if key in source}
+        shortened = []
+        for key, maximum in fields.items():
+            value = item.get(key)
+            if maximum and isinstance(value, str) and len(value) > maximum:
+                item[key] = value[:maximum]
+                shortened.append(key)
+        if shortened:
+            item["truncated_fields"] = shortened
+            limited = True
+        cost = len(json.dumps(item, ensure_ascii=False))
+        if len(result) >= limit or used + cost > budget:
+            limited = True
+            break
+        result.append(item)
+        used += cost
+    return result, limited
+
+
 def without_repeated_messages(context, body):
     # Only drop records demonstrably included in the XML body. Observations and
     # draft generation may not carry that body, so keep their recent messages.
@@ -25,7 +48,7 @@ def without_repeated_messages(context, body):
     }
 
 
-def owner_query_history(jobs, revision, current_job=None):
+def owner_query_history(jobs, revision, current_job=None, *, chat_ids=None):
     """Bounded read-only references; never inherit old mutation instructions."""
     history = []
     for job in jobs:
@@ -41,6 +64,10 @@ def owner_query_history(jobs, revision, current_job=None):
         except (ValueError, TypeError):
             continue
         if not isinstance(result, dict) or result.get("context_revision") != revision:
+            continue
+        if chat_ids is not None and sorted(
+            result.get("context_chat_ids", [])
+        ) != sorted(chat_ids):
             continue
         if result.get("actions") or not isinstance(result.get("answer"), str):
             continue

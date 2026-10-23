@@ -2,9 +2,11 @@ import asyncio
 import json
 from collections import defaultdict
 from copy import deepcopy
+from loguru import logger
 from .store import DEFAULT_RULES
 from .ai_context import without_repeated_messages, owner_query_history
 from .control_policy import allowed_control_actions
+from .control_context import build_control_context, needs_work_context, compact_work_context
 from .work_context import project_catalog
 from .prompts import analysis_prompt, control_prompt, polish_prompt
 
@@ -363,30 +365,57 @@ class WorkEngine:
     async def control(self, text, job_id):
         store = self.runtime.hub
         allowed = allowed_control_actions(text)
-        conversations, personas = store.conversations(), store.personas()
-        work = store.work_tasks(include_done=True)
-        tasks = work["items"]
-        chat_ids = {c["chat_id"] for c in conversations}
-        profiles = {p["key"] for p in personas}
+        selection = build_control_context(store, text, allowed)
+        conversations, personas = selection["conversations"], selection["personas"]
+        tasks = selection["tasks"]
+        chat_ids = set(selection["chat_ids"])
+        profiles = set(selection["profile_keys"])
         task_by_id = {t["id"]: t for t in tasks}
         # Owner-only work material must never enter a plan that can send to a
         # colleague. Recipient-facing generation uses chat-scoped retrieval.
         context_revision = self.runtime.knowledge.state()["revision"]
         history = (
             owner_query_history(
-                store.control_history(), context_revision, store.job(job_id)
+                store.control_history(),
+                context_revision,
+                store.job(job_id),
+                chat_ids=selection["chat_ids"],
             )
             if not allowed
             else []
         )
+        history = [
+            {**item, "question": item["question"][:300], "answer": item["answer"][:600]}
+            for item in history[-2:]
+        ]
         search_query = (
             text + "\n" + "\n".join(item["question"] for item in history[-2:])
         )
-        work_context = (
-            await self.runtime.work_context.read(search_query[:2000], task_limit=0)
-            if not allowed
-            else None
+        work_context = None
+        retrieval_query = (
+            text
+            if (
+                selection["scope"]["tasks_requested"]
+                or selection["scope"]["conversations_requested"]
+            )
+            else search_query
         )
+        if (
+            not allowed
+            and not selection["scope"]["selection_required"]
+            and needs_work_context(
+                retrieval_query, self.runtime.work_context.projects()
+            )
+        ):
+            work_context = compact_work_context(
+                await self.runtime.work_context.read(
+                    search_query[:2000],
+                    task_limit=0,
+                    chat_id=selection["chat_ids"][0]
+                    if len(selection["chat_ids"]) == 1
+                    else "",
+                )
+            )
         prompt = control_prompt(
             text,
             conversations,
@@ -394,8 +423,18 @@ class WorkEngine:
             tasks,
             allowed,
             work_context=work_context,
-            task_total=work["unfinished_total"],
+            task_total=selection["task_total"],
             history=history,
+            scope=selection["scope"],
+        )
+        logger.info(
+            "控制台上下文 chats={} profiles={} tasks={}/{} chars={} selection_required={}",
+            len(conversations),
+            len(personas),
+            len(tasks),
+            selection["task_total"],
+            len(prompt),
+            selection["scope"]["selection_required"],
         )
         response_schema = deepcopy(CONTROL_SCHEMA)
         action_schema = response_schema["properties"]["actions"]
@@ -437,6 +476,10 @@ class WorkEngine:
                         "当前指令没有明确要求发送，查询、起草或不发送指令已阻止发送"
                         if kind == "send_message"
                         else "当前指令未明确要求此操作，已阻止修改"
+                    )
+                if selection["scope"]["selection_required"]:
+                    raise ValueError(
+                        "操作对象不明确，请提供准确联系人、会话 ID 或任务编号"
                     )
                 if kind == "send_message":
                     if action.get("chat_id") not in chat_ids:
@@ -504,6 +547,7 @@ class WorkEngine:
             "answer": plan.get("answer", ""),
             "actions": results,
             "context_revision": context_revision if not allowed else None,
+            "context_chat_ids": selection["chat_ids"],
         }
 
     async def polish_task(self, task, text, instruction=""):
