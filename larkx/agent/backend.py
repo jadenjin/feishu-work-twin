@@ -20,6 +20,9 @@ class AgentBackend:
     def reset_session(self, session_key: str):
         pass
 
+    async def aclose(self):
+        pass
+
 
 CMD_TEMPLATE = 'claude -p --dangerously-skip-permissions'
 
@@ -98,12 +101,29 @@ class NullBackend(AgentBackend):
         return ''
 
 
+_BACKENDS = {}
+
+
+def register_backend(name, factory):
+    """Register a no-argument factory before constructing the runtime."""
+    if not name or name in {"claude", "codex", "compatible", "none"} or name in _BACKENDS:
+        raise ValueError("AI 后端名称为空或已注册")
+    _BACKENDS[name] = factory
+
+
 def get_backend(name: str=None) -> AgentBackend:
     cfg = load_config()
     name = name or cfg['agent_backend']
+    if name in _BACKENDS:
+        return _BACKENDS[name]()
     if name == 'claude':
         return ClaudeCodeBackend()
     if name == 'codex':
         from .codex_backend import CodexBackend
         return CodexBackend()
-    return NullBackend()
+    if name == 'compatible':
+        from .compatible_backend import CompatibleBackend
+        return CompatibleBackend()
+    if name == 'none':
+        return NullBackend()
+    raise ValueError(f"未注册的 AI 后端：{name}")

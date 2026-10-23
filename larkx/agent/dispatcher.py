@@ -6,6 +6,7 @@ from xml.sax.saxutils import escape, quoteattr
 from loguru import logger
 
 from ..config import load_config
+from .contracts import scoped_key
 
 INSTRUCTIONS = "以上是飞书会话里新到的一条消息(XML 里有会话/发送者/内容)。你是这个数字人,完整对话历史你都有。如果对方也是机器人且只是互相客套寒暄,直接结束不要再接话。"
 OUTPUT_RULES = "不需要回复就直接结束,不要解释、不要复述消息。"
@@ -115,15 +116,15 @@ class AgentDispatcher:
         self.workers = {}
 
     def session_key_of(self, msg: dict) -> str:
-        # A work twin must not mix one contact's model history into another chat.
-        if self.workflow:
-            return f"{msg.get('chat_id')}:{msg.get('anchor') or ''}"
-        scope = self.cfg["context_scope"]
-        if scope == "global":
-            return "global"
-        if scope == "chat":
-            return str(msg.get("chat_id"))
-        return f"{msg.get('chat_id')}:{msg.get('anchor') or ''}"
+        # Legacy 'global' no longer shares history across unrelated people.
+        # A group thread is intentionally shared by its participants.
+        anchor = (
+            "" if not self.workflow and self.cfg["context_scope"] == "chat"
+            else msg.get("anchor") or ""
+        )
+        return scoped_key(
+            msg.get("_account_id") or "local-owner", "chat", msg.get("chat_id"), anchor
+        )
 
     def should_handle(self, msg: dict, my_user_id: str) -> bool:
         if str(msg.get("from_id")) == str(my_user_id):
@@ -178,6 +179,7 @@ class AgentDispatcher:
         sender_name: str = "",
         my_user_id: str = "",
     ):
+        msg = dict(msg, _account_id=str(my_user_id or "local-owner"))
         if not self.should_handle(msg, my_user_id):
             # A non-mention can complete an already-triggered group request during
             # its quiet interval, but must never start a new automatic reply.
