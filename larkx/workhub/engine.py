@@ -4,9 +4,17 @@ from collections import defaultdict
 from copy import deepcopy
 from loguru import logger
 from .store import DEFAULT_RULES
-from .ai_context import without_repeated_messages, owner_query_history
+from .ai_context import (
+    without_repeated_messages,
+    owner_query_history,
+    recent_reply_messages,
+)
 from .control_policy import allowed_control_actions
-from .control_context import build_control_context, needs_work_context, compact_work_context
+from .control_context import (
+    build_control_context,
+    needs_work_context,
+    compact_work_context,
+)
 from .work_context import project_catalog
 from .prompts import analysis_prompt, control_prompt, polish_prompt
 
@@ -122,6 +130,17 @@ class WorkEngine:
             anchor=msg.get("anchor") or "",
             through_msg_id=str(msg.get("msg_id") or ""),
         )
+        if not overview_only:
+            ctx["recent_messages"], ctx["history_scope"] = recent_reply_messages(
+                ctx.get("recent_messages", []), msg
+            )
+        if "_reply_context_ids" in msg:
+            visible_ids = set(msg["_reply_context_ids"])
+            ctx["recent_messages"] = [
+                row
+                for row in ctx["recent_messages"]
+                if str(row.get("msg_id")) in visible_ids
+            ]
         if msg.get("chat_type") in (2, 3):
             names = {
                 str(row.get("sender_id") or ""): row.get("sender") or ""
@@ -143,6 +162,9 @@ class WorkEngine:
                 getattr(getattr(self.runtime.client, "auth", None), "user_id", "")
             )
         ctx = without_repeated_messages(ctx, body)
+        if "_reply_history_scope" in msg:
+            ctx["recent_messages"] = []
+            ctx["history_scope"] = msg["_reply_history_scope"]
         # Skip retrieval for a reply we already know cannot be delivered, while
         # preserving the intent classification (including real @mentions).
         reply_suppressed = (
@@ -217,6 +239,13 @@ class WorkEngine:
         if required_reply:
             schema["properties"]["should_reply"]["enum"] = [True]
             schema["properties"]["reply"]["minLength"] = 1
+        logger.info(
+            "工作分析上下文 mode={} history={} images={} chars={}",
+            ctx["analysis_mode"],
+            ctx.get("history_scope", {}).get("recent_count", 0),
+            len(images),
+            len(prompt),
+        )
         async with self.runtime.model_slots:
             raw = await self.runtime.generate(
                 "work:" + json.dumps([session_key, chat_id, msg.get("anchor") or ""]),

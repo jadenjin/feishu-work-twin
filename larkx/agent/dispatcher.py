@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from datetime import datetime
 from xml.sax.saxutils import escape, quoteattr
@@ -6,6 +7,7 @@ from xml.sax.saxutils import escape, quoteattr
 from loguru import logger
 
 from ..config import load_config
+from ..workhub.ai_context import message_time, recent_reply_messages
 from .contracts import scoped_key
 
 INSTRUCTIONS = "以上是飞书会话里新到的一条消息(XML 里有会话/发送者/内容)。你是这个数字人,完整对话历史你都有。如果对方也是机器人且只是互相客套寒暄,直接结束不要再接话。"
@@ -257,6 +259,7 @@ class AgentDispatcher:
     async def handle_message(self, session_key: str, msg: dict):
         batch = msg.get("_batch") or [msg]
         body = "\n".join(build_xml_message(item) for item in batch)
+        current_body = body
         context = []
         if self.workflow:
             ids = {str(item.get("msg_id")) for item in batch}
@@ -264,6 +267,15 @@ class AgentDispatcher:
                 self.workflow.runtime.hub.reply_context, msg
             )
             context = [item for item in context if str(item.get("msg_id")) not in ids]
+            context, history_scope = recent_reply_messages(
+                context, msg, render=build_xml_message
+            )
+            # The engine must not reintroduce discarded history from its DB snapshot.
+            msg = dict(
+                msg,
+                _reply_history_scope=history_scope,
+                _reply_context_ids=[str(item.get("msg_id") or "") for item in context],
+            )
             if context:
                 body = (
                     "同一会话/话题的最近背景消息（仅作上下文，不独立触发回复）：\n"
@@ -272,38 +284,67 @@ class AgentDispatcher:
                     + body
                 )
         image_paths = []
+        image_sources = []
         if self.backend.returns_reply and self.image_prepare:
             # Include images immediately preceding a standalone @mention too.
-            latest_time = float(msg.get("create_time") or 0)
-            if latest_time > 100000000000:
-                latest_time /= 1000
+            latest_time = message_time(msg)
             preceding_images = []
             image_window = (
                 1800
-                if any(word in body for word in ("截图", "图片", "上面", "照片"))
+                if any(
+                    word
+                    in current_body
+                    + "\n"
+                    + "\n".join(str(item.get("content") or "") for item in context[-2:])
+                    for word in ("截图", "图片", "上面", "照片")
+                )
                 else 180
             )
             for item in context:
-                timestamp = float(item.get("create_time") or 0)
-                if timestamp > 100000000000:
-                    timestamp /= 1000
+                timestamp = message_time(item)
                 if latest_time and 0 <= latest_time - timestamp <= image_window:
                     preceding_images.append(item)
             for item in batch + list(reversed(preceding_images)):
-                if len(image_paths) >= 3:
-                    break
                 if item.get("msg_type") in (2, 5):
+                    source = {"msg_id": str(item.get("msg_id") or "")}
+                    if len(image_paths) >= 3:
+                        image_sources.append(
+                            {**source, "status": "未加载，已达到三张图片上限"}
+                        )
+                        continue
                     try:
                         prepared = await self.image_prepare(item)
-                        image_paths.extend(
-                            prepared if isinstance(prepared, list) else [prepared]
-                        )
+                        paths = prepared if isinstance(prepared, list) else [prepared]
+                        for position, path in enumerate(paths, 1):
+                            if not path:
+                                continue
+                            if path not in image_paths and len(image_paths) < 3:
+                                image_paths.append(path)
+                            image_sources.append(
+                                {
+                                    **source,
+                                    "position_in_message": position,
+                                    "attachment_index": image_paths.index(path) + 1
+                                    if path in image_paths
+                                    else None,
+                                    "status": "已附带可读取图片"
+                                    if path in image_paths
+                                    else "未加载，已达到三张图片上限",
+                                }
+                            )
                     except Exception as e:
                         logger.warning(
                             f"图片下载失败 [{session_key}]: {type(e).__name__}"
                         )
-                        body += "\n此条图片下载失败，无法查看；请明确说明并请对方重发，不要猜测。"
-            image_paths = image_paths[:3]
+                        image_sources.append({**source, "status": "下载失败"})
+        if image_sources:
+            body += (
+                "\n本次图片附件与消息对应关系（attachment_index 从 1 起，与附件顺序一致）：\n"
+                + json.dumps(image_sources, ensure_ascii=False)
+                + "\n请先读取已附带图片，再结合对应消息回答。[文档]标记和历史中看不到旧图的说法"
+                "不代表本次图片不可见。区分图中可识别的内容与图中没有的日期、排期、承诺；"
+                "仅对本次问题需要但未加载/下载失败的图片说明缺项，不要求重发已可读的图片。"
+            )
         chat_id = str(msg["chat_id"])
         root_id = (msg.get("anchor") or "") or None
         reply_cmd = f'lark send {chat_id} "<回复内容>"'

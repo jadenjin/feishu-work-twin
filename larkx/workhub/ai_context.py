@@ -30,6 +30,46 @@ def compact_records(rows, fields, *, budget, limit):
     return result, limited
 
 
+def message_time(message):
+    value = float(message.get("create_time") or message.get("time") or 0)
+    return value / 1000 if value > 100000000000 else value
+
+
+def recent_reply_messages(messages, current, *, render=None):
+    """Bound optional history, never the current incoming batch or stored records."""
+    latest = message_time(current)
+    selected, used, shortened = [], 0, False
+    for source in reversed(messages):
+        timestamp = message_time(source)
+        if latest and timestamp and not 0 <= latest - timestamp <= 86400:
+            continue
+        item = dict(source)
+        content = str(item.get("content") or "")
+        if len(content) > 800:
+            item["content"] = content[:800] + "[内容截断]"
+            shortened = True
+        cost = len(
+            render(item)
+            if render
+            else json.dumps(
+                {
+                    k: item.get(k)
+                    for k in ("msg_id", "sender_id", "sender", "time", "content")
+                },
+                ensure_ascii=False,
+            )
+        )
+        if len(selected) >= 8 or used + cost > 3600:
+            break
+        selected.append(item)
+        used += cost
+    return list(reversed(selected)), {
+        "recent_count": len(selected),
+        "history_limited": shortened or len(selected) < len(messages),
+        "history_window_hours": 24,
+    }
+
+
 def without_repeated_messages(context, body):
     # Only drop records demonstrably included in the XML body. Observations and
     # draft generation may not carry that body, so keep their recent messages.
