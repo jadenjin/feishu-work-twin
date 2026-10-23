@@ -134,7 +134,7 @@ def display_parts(msg_type, data):
                     prop = P.AtProperty()
                     prop.ParseFromString(raw)
                     parts.append({"type": "text", "text": prop.content or "@"})
-                elif tag in (1, 6, 7, 8, 9, 17):
+                elif tag in (1, 3, 6, 7, 8, 9, 17):
                     prop = P.TextProperty()
                     prop.ParseFromString(raw)
                     if prop.content:
@@ -142,6 +142,8 @@ def display_parts(msg_type, data):
                 elif tag == 10:
                     # Unicode emoji text is rendered naturally; unsupported custom reactions retain a placeholder.
                     parts.append({"type": "text", "text": "[表情]"})
+                elif tag in (18, 22):
+                    parts.append({"type": "text", "text": "[视频]" if tag == 18 else "[文档]"})
             except Exception:
                 pass
         for child in e.get("childIds") or []:
@@ -149,7 +151,10 @@ def display_parts(msg_type, data):
         if tag in (3, 4, 14) and parts and parts[-1].get("text") != "\n":
             parts.append({"type": "text", "text": "\n"})
 
-    roots = rich.get("elementIds") or list(elements)
+    roots = rich.get("elementIds") or (
+        sorted(elements, key=int) if all(str(key).isdigit() for key in elements)
+        else list(elements)
+    )
     for eid in roots:
         visit(eid)
     return parts

@@ -77,49 +77,15 @@ def resolve_scope(
 
 
 def extract_rich_text(rich_text_dict):
-    TAG_PLACEHOLDERS = {2: "[图片]", 5: "[@]", 10: "[表情]", 18: "[视频]", 22: "[文档]"}
-    text = ""
-    try:
-        dictionary = rich_text_dict["elements"]["dictionary"]
-        element_ids = rich_text_dict.get("elementIds") or []
-        if element_ids:
-            ordered = [(k, dictionary[k]) for k in element_ids if k in dictionary]
-            ordered += [
-                (k, v) for k, v in dictionary.items() if k not in set(element_ids)
-            ]
-        else:
-            try:
-                ordered = sorted(dictionary.items(), key=lambda item: int(item[0]))
-            except Exception:
-                ordered = list(dictionary.items())
-        for k, v in ordered:
-            tag = v.get("tag", 1)
-            prop = v.get("property")
-            if not prop:
-                continue
-            if tag in (1, 3, 7, 8, 9, 17):
-                tp = P.TextProperty()
-                try:
-                    tp.ParseFromString(prop)
-                    text += tp.content
-                    if tag == 3:
-                        text += "\n"
-                    continue
-                except Exception:
-                    pass
-            if tag == 5:
-                ap = P.AtProperty()
-                try:
-                    ap.ParseFromString(prop)
-                    if ap.content:
-                        text += ap.content
-                        continue
-                except Exception:
-                    pass
-            text += TAG_PLACEHOLDERS.get(tag, "")
-    except Exception:
-        pass
-    return text
+    from ..media import display_parts
+
+    # The model must read the same ordered tree as the UI, not map iteration
+    # order or stale nodes no longer referenced by the visible document.
+    parts = display_parts(4, {"richText": rich_text_dict or {}})
+    return "".join(
+        "[图片]" if part["type"] == "image" else part.get("text", "")
+        for part in parts
+    )
 
 
 def decode_message_content(message_type, content_bytes):
@@ -319,7 +285,16 @@ def mention_targets(data):
     ids = []
     at_all = False
     rich = (data or {}).get("richText") or {}
-    for element in (rich.get("elements") or {}).get("dictionary", {}).values():
+    elements = (rich.get("elements") or {}).get("dictionary", {})
+    pending = list(reversed(rich.get("elementIds") or list(elements)))
+    seen = set()
+    while pending:
+        key = pending.pop()
+        if key in seen or key not in elements:
+            continue
+        seen.add(key)
+        element = elements[key]
+        pending.extend(reversed(element.get("childIds") or []))
         if element.get("tag") != 5:
             continue
         try:
@@ -387,4 +362,12 @@ def decode_push_messages(raw: bytes):
         )
         out[-1]["at_user_ids"] = at_user_ids
         out[-1]["at_all"] = at_all
-    return out
+    groups = {}
+    for message in out:
+        groups.setdefault(message["chat_id"], []).append(message)
+    for messages in groups.values():
+        # A protobuf map has no arrival order. Server positions order each chat;
+        # legacy frames without positions fall back to their server timestamps.
+        field = "position" if all(m["position"] for m in messages) else "create_time"
+        messages.sort(key=lambda message: message[field] or 0)
+    return [message for messages in groups.values() for message in messages]
