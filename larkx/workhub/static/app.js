@@ -470,7 +470,7 @@ $('#taskPolish').addEventListener('click',async()=>{
   const button=$('#taskPolish');button.disabled=true;$('#taskSendButton').disabled=true;
   $('#taskPolishHint').textContent='润色中…';
   try{const j=await api(`/api/tasks/${taskId}/polish`,mutation('POST',{text:original,instruction:$('#taskPolishInstruction').value}));const result=await waitJob(j.job_id);await loadState(false);
-    if(state.task?.id===taskId){if($('#taskReply').value===original){$('#taskReply').value=result.reply;$('#taskPolishHint').textContent='草稿已保存';}else{$('#taskPolishHint').textContent='AI 草稿已保存；已保留你正在修改的内容';}}
+    if(state.task?.id===taskId){if(result.saved===false){$('#taskPolishHint').textContent=result.message+'。候选草稿：'+result.reply;}else if($('#taskReply').value===original){$('#taskReply').value=result.reply;$('#taskPolishHint').textContent='草稿已保存';}else{$('#taskPolishHint').textContent='AI 草稿已保存；已保留你正在修改的内容';}}
     toast('AI 草稿已生成，尚未发送');
   }catch(e){$('#taskPolishHint').textContent='润色未完成：'+e.message;toast(e.message);}finally{button.disabled=false;$('#taskSendButton').disabled=false;}
 });

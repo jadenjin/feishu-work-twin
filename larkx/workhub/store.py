@@ -830,6 +830,26 @@ class HubStore:
             s.commit()
             return record(row)
 
+    def save_task_draft(self, snapshot, reply):
+        """Save only if the task still matches the owner's submitted version."""
+        with self.storage.Session() as session:
+            query = session.query(Task).filter(
+                Task.id == snapshot["id"],
+                Task.status != "done",
+                Task.updated_at == datetime.fromisoformat(snapshot["updated_at"]),
+            )
+            # Also compare fields on databases that truncate timestamp precision.
+            for field in (
+                "title", "details", "status", "priority", "due_at", "draft_reply",
+            ):
+                query = query.filter(getattr(Task, field) == snapshot[field])
+            saved = query.update(
+                {"draft_reply": reply, "updated_at": datetime.now()},
+                synchronize_session=False,
+            )
+            session.commit()
+            return bool(saved)
+
     def claim_send(self, request_id, chat_id, content, anchor="", target=None):
         key = "send_target:" + hashlib.sha256(request_id.encode()).hexdigest()
         target = target or {}

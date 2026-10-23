@@ -428,6 +428,14 @@ class HubRuntime:
         return result["message_id"]
 
     def submit_job(self, kind, text, chat_id=""):
+        if kind == "task_draft":
+            payload = json.loads(text)
+            snapshot = self.hub.task(payload["task_id"])
+            if not snapshot:
+                raise ValueError("待办不存在")
+            # Capture before enqueueing, including edits made while waiting to run.
+            payload["task_snapshot"] = snapshot
+            text = json.dumps(payload, ensure_ascii=False)
         job_id = str(uuid.uuid4())
         self.hub.new_job(job_id, kind, text)
         task = self.spawn(self.run_job(job_id, kind, text, chat_id))
@@ -472,7 +480,13 @@ class HubRuntime:
                 result = await self.engine.polish_task(
                     task, payload["text"], payload["instruction"]
                 )
-                self.hub.update_task(task["id"], {"draft_reply": result["reply"]})
+                result["saved"] = self.hub.save_task_draft(
+                    payload.get("task_snapshot") or task, result["reply"]
+                )
+                if not result["saved"]:
+                    result["message"] = (
+                        "待办已变更或完成，已保留当前内容；AI 候选草稿未自动保存"
+                    )
             elif kind == "conversation_draft":
                 payload = json.loads(text)
                 if chat_id not in {c["chat_id"] for c in self.hub.conversations()}:
