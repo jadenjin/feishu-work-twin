@@ -17,6 +17,41 @@ DEFAULT_RULES = (
 )
 DEFAULT_SUFFIX = "reply by Bot"
 
+TASK_FIELDS = {
+    "title": 256, "details": 12000, "chat_id": 40, "anchor": 40,
+    "priority": 12, "due_at": 80, "draft_reply": 12000, "status": 20,
+}
+PERSONA_FIELDS = {
+    "role": 256, "description": 10000, "reply_style": 10000,
+    "mode": 12, "group_reply_policy": 12,
+}
+
+
+def validate_text_fields(fields, limits):
+    """Validate before opening a mutation transaction, including direct callers."""
+    if not isinstance(fields, dict):
+        raise ValueError("提交内容必须是字段对象")
+    for field, value in fields.items():
+        if field not in limits:
+            raise ValueError(f"不支持修改字段：{field}")
+        if not isinstance(value, str) or len(value) > limits[field]:
+            raise ValueError(f"{field} 必须是文字，最多 {limits[field]} 字符")
+
+
+def validate_task_fields(fields, *, creating=False):
+    limits = TASK_FIELDS if creating else {
+        key: value for key, value in TASK_FIELDS.items() if key not in ("chat_id", "anchor")
+    }
+    validate_text_fields(fields, limits)
+    if (creating or "title" in fields) and not fields.get("title", "").strip():
+        raise ValueError("任务标题不能为空，最多 256 字符")
+    if "status" in fields and fields["status"] not in (
+        "open", "in_progress", "done", "needs_attention",
+    ):
+        raise ValueError("任务状态无效")
+    if "priority" in fields and fields["priority"] not in ("low", "normal", "high"):
+        raise ValueError("任务优先级无效")
+
 
 def record(row):
     return {
@@ -245,6 +280,7 @@ class HubStore:
             }
 
     def update_persona(self, key, fields):
+        validate_text_fields(fields, PERSONA_FIELDS)
         with self.storage.Session() as s:
             row = s.get(Persona, key)
             if not row:
@@ -768,30 +804,9 @@ class HubStore:
             s.commit()
 
     def create_task(self, fields):
+        validate_task_fields(fields, creating=True)
         with self.storage.Session() as s:
-            row = Task(
-                **{
-                    k: v
-                    for k, v in fields.items()
-                    if k
-                    in (
-                        "title",
-                        "details",
-                        "chat_id",
-                        "anchor",
-                        "priority",
-                        "due_at",
-                        "draft_reply",
-                        "status",
-                    )
-                }
-            )
-            if (
-                not isinstance(row.title, str)
-                or not row.title.strip()
-                or len(row.title) > 256
-            ):
-                raise ValueError("任务标题不能为空，最多 256 字符")
+            row = Task(**fields)
             row.status = row.status or "open"
             row.priority = row.priority or "normal"
             if row.status not in (
@@ -808,6 +823,7 @@ class HubStore:
             return record(row)
 
     def update_task(self, task_id, fields):
+        validate_task_fields(fields)
         with self.storage.Session() as s:
             row = s.get(Task, task_id)
             if not row:

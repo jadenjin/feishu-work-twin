@@ -386,19 +386,11 @@ def create_app(runtime=None, start_bridge=True):
 
     @app.patch("/api/personas/{key}")
     async def persona(key: str, request: Request):
-        fields = await request.json()
-        if not isinstance(fields, dict) or any(
-            len(str(v)) > 10000 for v in fields.values()
-        ):
-            raise ValueError("角色描述过长或格式无效")
-        return hub(request).hub.update_persona(key, fields)
+        return hub(request).hub.update_persona(key, await request.json())
 
     @app.post("/api/tasks")
     async def task_create(request: Request):
-        fields = await request.json()
-        if not fields.get("title") or len(fields["title"]) > 256:
-            raise ValueError("请填写任务标题，最多 256 字符")
-        return hub(request).hub.create_task(fields)
+        return hub(request).hub.create_task(await request.json())
 
     @app.patch("/api/tasks/{task_id}")
     async def task_update(task_id: int, request: Request):
