@@ -82,7 +82,7 @@ class Storage:
                 q = q.filter(Message.anchor == anchor)
             if before_ts:
                 q = q.filter(Message.create_time < before_ts)
-            rows = q.order_by(desc(Message.create_time)).limit(limit).all()
+            rows = q.order_by(desc(Message.create_time), desc(Message.id)).limit(limit).all()
             rows.reverse()
             return rows
         finally:

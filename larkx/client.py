@@ -2,6 +2,7 @@ import asyncio
 import threading
 import time
 from urllib.parse import urlencode
+from weakref import WeakValueDictionary
 import requests
 import websockets
 from loguru import logger
@@ -20,6 +21,7 @@ class LarkClient:
         self.loop = asyncio.new_event_loop()
         self._loop_started = False
         self._thread_chats = {}
+        self._dispatch_locks = WeakValueDictionary()
 
     def build_ws_url(self) -> str:
         device_id = self.auth.device_id
@@ -119,10 +121,15 @@ class LarkClient:
 
     async def _dispatch(self, msg, on_message):
         try:
-            # 推送里没有会话模式,话题群的根消息要查过 chatMode 才能归到它自己的话题
-            if msg['scope'] == 'chat' and msg.get('chat_type') == 2 and await asyncio.to_thread(self.is_thread_chat, msg['chat_id']):
-                msg['scope'], msg['anchor'] = decoders.resolve_scope(msg['msg_id'], msg['msg_type'], 2, '', '', thread_chat=True)
-            await on_message(msg)
+            # Preserve arrival order through async name/mode lookups and storage.
+            # Other chats remain independent; idle locks need not be retained.
+            key = str(msg['chat_id'])
+            lock = self._dispatch_locks.setdefault(key, asyncio.Lock())
+            async with lock:
+                # 推送里没有会话模式,话题群的根消息要查过 chatMode 才能归到它自己的话题
+                if msg['scope'] == 'chat' and msg.get('chat_type') == 2 and await asyncio.to_thread(self.is_thread_chat, msg['chat_id']):
+                    msg['scope'], msg['anchor'] = decoders.resolve_scope(msg['msg_id'], msg['msg_type'], 2, '', '', thread_chat=True)
+                await on_message(msg)
         except Exception as e:
             logger.error(f'消息回调异常: {e}')
 
