@@ -308,7 +308,7 @@ def cmd_download(args):
 
 
 async def _listen(args, auth):
-    client = LarkClient(auth)
+    client = await asyncio.to_thread(LarkClient, auth)
     runtime = getattr(args, 'runtime', None)
     if runtime:
         runtime.client = client
@@ -319,7 +319,7 @@ async def _listen(args, auth):
     st = Storage()
     cfg_agent = args.agent
     if cfg_agent and (not auth.user_id):
-        auth._fetch_profile()
+        await asyncio.to_thread(auth._fetch_profile)
         auth.save()
     if cfg_agent and (not auth.user_id):
         print('无法确定当前账号 user_id,--agent 存在自回环风险,已拒绝启动。请先 lark auth check 确认凭证有效。', file=sys.stderr)
@@ -385,18 +385,22 @@ async def _listen(args, auth):
                 await asyncio.to_thread(client.mark_read, chat_id, msg['position'], [msg['msg_id']])
             if dispatcher:
                 await dispatcher.submit(msg, chat_name=chat_name, sender_name=sender_name, my_user_id=auth.user_id)
-    while True:
-        try:
-            if runtime:
-                runtime.connection = 'connecting'
-            await client.connect_websocket(on_message)
-        except AuthExpired:
-            raise
-        except Exception as e:
+    try:
+        while True:
+            try:
+                if runtime:
+                    runtime.connection = 'connecting'
+                await client.connect_websocket(on_message)
+            except AuthExpired:
+                raise
+            except Exception as e:
+                logger.warning(f'WS 断开,10s 后重连: {e}')
             if runtime:
                 runtime.connection = 'reconnecting'
-            logger.warning(f'WS 断开,10s 后重连: {e}')
+            # A normal close also needs backoff; otherwise it creates a hot loop.
             await asyncio.sleep(10)
+    finally:
+        await client.aclose()
 
 
 def cmd_listen(args):

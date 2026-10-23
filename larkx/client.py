@@ -22,6 +22,7 @@ class LarkClient:
         self._loop_started = False
         self._thread_chats = {}
         self._dispatch_locks = WeakValueDictionary()
+        self._dispatch_tasks = set()
 
     def build_ws_url(self) -> str:
         device_id = self.auth.device_id
@@ -94,7 +95,7 @@ class LarkClient:
             self._loop_started = True
 
     async def connect_websocket(self, on_message):
-        url = self.build_ws_url()
+        url = await asyncio.to_thread(self.build_ws_url)
         async with websockets.connect(url) as ws:
             logger.info('WS 已连接')
             if getattr(self, 'on_connected', None):
@@ -112,12 +113,23 @@ class LarkClient:
                         for msg in decoders.decode_push_messages(raw):
                             if not msg.get('from_id'):
                                 continue
-                            asyncio.create_task(self._dispatch(msg, on_message))
+                            task = asyncio.create_task(self._dispatch(msg, on_message))
+                            self._dispatch_tasks.add(task)
+                            task.add_done_callback(self._dispatch_tasks.discard)
                     except Exception as e:
                         logger.debug(f'跳过异常帧: {e}')
                         continue
             finally:
                 heartbeat_task.cancel()
+                await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+    async def aclose(self):
+        pending = list(self._dispatch_tasks)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        if not self._loop_started and not self.loop.is_closed():
+            self.loop.close()
 
     async def _dispatch(self, msg, on_message):
         try:

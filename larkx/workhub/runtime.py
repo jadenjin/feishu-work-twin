@@ -61,8 +61,12 @@ class HubRuntime:
         self.spawn(self.bridge())
 
     async def stop(self):
-        for task in list(self.tasks):
+        pending = list(self.tasks)
+        for task in pending:
             task.cancel()
+        # Stop ingestion before taking the worker snapshot: a callback finishing
+        # during bridge shutdown may still have created a session worker.
+        await asyncio.gather(*pending, return_exceptions=True)
         workers = (
             [w.task for w in self.dispatcher.workers.values()]
             if self.dispatcher
@@ -70,7 +74,8 @@ class HubRuntime:
         )
         for task in workers:
             task.cancel()
-        await asyncio.gather(*list(self.tasks), *workers, return_exceptions=True)
+        await asyncio.gather(*workers, return_exceptions=True)
+        self.connection = "stopped"
         close = getattr(self.backend, "aclose", None)
         if close:
             await close()
