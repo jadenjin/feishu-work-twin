@@ -15,6 +15,15 @@ def _print_json(obj):
     print(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
 
 
+def _message_time(value):
+    if not value:
+        return ''
+    timestamp = float(value)
+    if timestamp > 100000000000:
+        timestamp /= 1000
+    return datetime.fromtimestamp(timestamp).strftime('%m-%d %H:%M')
+
+
 def cmd_auth(args):
     auth = LarkAuth()
     # 新登录的区域: --region > 已有凭证的区域 > LARKX_REGION
@@ -201,7 +210,7 @@ def cmd_messages(args):
         _print_json([{c.name: getattr(r, c.name) for c in r.__table__.columns} for r in rows])
         return 0
     for r in rows:
-        ts = datetime.fromtimestamp(r.create_time).strftime('%m-%d %H:%M') if r.create_time else ''
+        ts = _message_time(r.create_time)
         scope = f'[{r.scope}:{r.anchor[:8]}]' if r.anchor else ''
         content = r.content or ''
         shown = content[:120] + ('…' if len(content) > 120 else '')
@@ -254,7 +263,7 @@ def cmd_history(args):
     for m in msgs:
         if args.json:
             continue
-        ts = datetime.fromtimestamp(m['create_time']).strftime('%m-%d %H:%M') if m.get('create_time') else ''
+        ts = _message_time(m.get('create_time'))
         scope = f"[{m['scope']}:{m['anchor'][:8]}]" if m['anchor'] else ''
         content = m['content'] or ''
         shown = content[:120] + ('…' if len(content) > 120 else '')
@@ -279,17 +288,17 @@ def cmd_download(args):
         msg = None
     else:
         st = Storage()
-        rows = None
-        if args.chat:
-            rows = st.get_messages(args.chat, limit=500)
-            rows = [r for r in rows if r.msg_id == args.msg_id]
-        else:
-            from .storage.models import Message
-            s = st.Session()
-            rows = s.query(Message).filter_by(msg_id=args.msg_id).all()
-            s.close()
+        from .storage.models import Message
+        with st.Session() as session:
+            query = session.query(Message).filter_by(msg_id=args.msg_id)
+            if args.chat:
+                query = query.filter_by(chat_id=args.chat)
+            rows = query.all()
         if not rows:
             print(f'本地未找到消息 {args.msg_id}(可用 --key/--chat 直接指定)', file=sys.stderr)
+            return 1
+        if len(rows) > 1:
+            print('消息编号对应多个会话，请用 --chat 指定会话', file=sys.stderr)
             return 1
         r = rows[-1]
         msg = {'msg_id': r.msg_id, 'chat_id': r.chat_id, 'msg_type': r.msg_type, 'content_data': json.loads(r.content_data) if r.content_data else None}
