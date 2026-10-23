@@ -1,5 +1,5 @@
-import os
 import hashlib
+import uuid
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote, urlencode
@@ -37,20 +37,26 @@ def download(
         r.raise_for_status()
         content_type = r.headers.get("content-type", "")
         if not out_path:
-            buf = b""
+            buf = bytearray()
             for chunk in r.iter_content(1 << 16):
-                buf += chunk
+                buf.extend(chunk)
                 if len(buf) > max_bytes:
                     raise ValueError("文件过大")
-            return (buf, content_type)
+            return (bytes(buf), content_type)
         n = 0
-        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-        with open(out_path, "wb") as f:
-            for chunk in r.iter_content(1 << 16):
-                f.write(chunk)
-                n += len(chunk)
-                if n > max_bytes:
-                    raise ValueError("文件过大")
+        target = Path(out_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        pending = target.with_name(target.name + "." + uuid.uuid4().hex + ".part")
+        try:
+            with pending.open("wb") as f:
+                for chunk in r.iter_content(1 << 16):
+                    n += len(chunk)
+                    if n > max_bytes:
+                        raise ValueError("文件过大")
+                    f.write(chunk)
+            pending.replace(target)
+        finally:
+            pending.unlink(missing_ok=True)
         return (out_path, content_type, n)
 
 
@@ -78,15 +84,26 @@ def prepare_image(auth: LarkAuth, msg: dict, cache_dir: Path) -> str:
     ).hexdigest()
     target = cache_dir / f"{name}.png"
     if target.exists():
-        return str(target.resolve())
+        try:
+            with Image.open(target) as cached:
+                cached.verify()
+        except (OSError, ValueError, SyntaxError):
+            pass
+        else:
+            return str(target.resolve())
     url = message_resource_url(
         msg["msg_id"], key, msg["chat_id"], host=auth.region.file_host
     )
     data, _ = download(auth, url, max_bytes=20 * 1024 * 1024)
-    with Image.open(BytesIO(data)) as image:
-        image = ImageOps.exif_transpose(image).convert("RGB")
-        image.thumbnail((2048, 2048))
-        image.save(target, format="PNG")
+    pending = target.with_suffix("." + uuid.uuid4().hex + ".tmp")
+    try:
+        with Image.open(BytesIO(data)) as image:
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            image.thumbnail((2048, 2048))
+            image.save(pending, format="PNG")
+        pending.replace(target)
+    finally:
+        pending.unlink(missing_ok=True)
     logger.info(f"图片已准备 [{msg['chat_id']}] bytes={len(data)}")
     return str(target.resolve())
 
