@@ -1,0 +1,72 @@
+/* Progressive disclosure and list controls share the existing visual palette. */
+body:not([data-view="home"]) #stats { display: none; }
+.page-head { padding: 22px 0 18px; }
+h1 { font-size: 26px; }
+.card { border-radius: 14px; box-shadow: none; }
+.button { border-radius: 9px; font-size: 13px; min-height: 38px; }
+button:disabled { cursor: not-allowed; }
+.task-title { font-size: 14px; }
+.task-meta, .conversation-row p, .persona-row p { font-size: 12px; }
+.list-toolbar { display: flex; gap: 12px; padding: 16px 22px; border-bottom: 1px solid var(--line); }
+.list-toolbar input { flex: 1; min-width: 0; }
+.list-toolbar select, #activityStatus { width: auto; min-width: 120px; }
+.list-status { margin: 0; padding: 0 22px; color: #b34545; font-size: 13px; }
+.list-status:not(:empty) { padding-top: 14px; padding-bottom: 14px; }
+[aria-busy="true"] .task-row { opacity: .65; }
+.pagination { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; padding: 16px 22px; border-top: 1px solid var(--line); font-size: 12px; color: #626b7b; }
+.page-count { margin-right: auto; font-variant-numeric: tabular-nums; }
+.pagination label { display: flex; align-items: center; gap: 8px; white-space: nowrap; font-size: 12px; }
+.pagination select { width: 64px; padding: 7px; border-radius: 8px; }
+.page-buttons { display: flex; align-items: center; gap: 12px; }
+.page-buttons > span { min-width: 42px; text-align: center; font-variant-numeric: tabular-nums; }
+.page-buttons .button { padding: 7px 12px; }
+.persona-row[hidden], #personaEmpty[hidden] { display: none; }
+.persona-row > div { min-width: 0; }
+.activity-detail summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 8px 0; color: #414b5b; }
+.activity-detail p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.activity-detail[open] summary { color: var(--green); }
+.settings-layout { max-width: 980px; margin: 0 auto; }
+.view-description { color: #626b7b; margin: 0 0 20px; }
+.settings-section { border: 1px solid var(--line); border-radius: 14px; background: white; margin-bottom: 14px; }
+.settings-section > summary { cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 24px; list-style: none; border-radius: 14px; }
+.settings-section > summary::-webkit-details-marker, .knowledge-project > summary::-webkit-details-marker { display: none; }
+.settings-section > summary strong { display: block; font-size: 15px; font-weight: 650; }
+.settings-section > summary small { display: block; font-size: 12px; color: #626b7b; margin-top: 5px; }
+.settings-section > summary:hover { background: #fafbfe; }
+.fold-chevron { color: #737d90; font-size: 20px; transition: transform .15s; }
+.settings-section[open] > summary .fold-chevron { transform: rotate(180deg); }
+.settings-section[open] > summary { border-bottom: 1px solid var(--line); border-radius: 14px 14px 0 0; }
+.settings-body { padding: 22px 24px; }
+.settings-body .form-grid { gap: 20px; }
+.settings-body label { font-size: 13px; }
+.settings-body input, .settings-body textarea { font-size: 13px; border-radius: 8px; }
+.field-help { display: block; color: #667184; font-size: 12px; line-height: 1.8; margin: 5px 0 0; font-weight: 400; }
+.field-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.settings-save { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0 24px; }
+.status-grid { display: grid; grid-template-columns: 120px minmax(0,1fr); gap: 14px 20px; margin: 0 0 16px; font-size: 13px; }
+.status-grid dt { color: #667184; }
+.status-grid dd { margin: 0; overflow-wrap: anywhere; }
+#workKnowledge > .section-pad { padding: 16px 0 0; }
+.knowledge-project { display: block; padding: 0; margin-bottom: 10px; border-radius: 10px; }
+.knowledge-project > summary { display: flex; cursor: pointer; list-style: none; padding: 16px; }
+.knowledge-project > summary::before { content: '›'; color: #737d90; font-size: 20px; }
+.knowledge-project[open] > summary::before { transform: rotate(90deg); }
+.knowledge-project > summary strong { flex: 1; overflow-wrap: anywhere; }
+.knowledge-project-body { padding: 0 16px 18px; display: grid; gap: 16px; }
+.project-actions { display: flex; justify-content: flex-end; }
+.project-actions .button { color: #a34343; }
+@media (max-width: 640px) {
+  .pagination { padding: 14px 16px; gap: 12px; }
+  .page-count { flex-basis: calc(100% - 120px); }
+  .page-buttons { width: 100%; justify-content: space-between; }
+  .page-buttons .button { min-height: 44px; }
+  .settings-section > summary, .settings-body { padding: 16px; }
+  .field-pair { grid-template-columns: 1fr; gap: 16px; }
+  .settings-section > summary small { line-height: 1.6; }
+  .list-toolbar { padding: 14px 16px; }
+  .list-toolbar select { min-width: 100px; }
+  .knowledge-project > summary .subtle { display: none; }
+  .knowledge-toolbar { gap: 8px; }
+  .settings-save { align-items: flex-start; }
+}
+@media (prefers-reduced-motion: reduce) { .fold-chevron { transition: none; } }

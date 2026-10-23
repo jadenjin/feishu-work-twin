@@ -1,10 +1,15 @@
 import {api, mutation, startPolling} from './client.js?v=1';
+import {pageSlice, renderPager} from './pagination.js?v=1';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const state = {view:'home',filter:'unfinished',data:null,chat:null,task:null,chatDrafts:{},chatPolishing:new Set(),conversationQuery:'',rendered:false};
 const viewNames = {home:'工作台',conversations:'会话与记忆',personas:'角色档案',activity:'执行记录',settings:'数字人设置'};
 const statusNames = {open:'待处理',in_progress:'进行中',done:'已完成',needs_attention:'需要你决定',pending:'处理中',sent:'已发送',failed:'失败',uncertain:'待核对',auto:'自动回复',draft:'先留草稿',off:'不自动回复'};
+const pages = Object.fromEntries(['tasks','conversations','personas','actions'].map(key=>[key,{page:1,size:10}]));
+const listRequests = {tasks:0,actions:0};
+const folds = new Map();
+let personaQuery='', personaKind='all', activityStatus='all';
 let toastTimer;
 function toast(text){clearTimeout(toastTimer);$('#toast').textContent=text;$('#toast').classList.add('show');toastTimer=setTimeout(()=>$('#toast').classList.remove('show'),4500);}
 function timeLabel(ts){if(!ts)return '';return new Date(typeof ts==='string'&&ts.includes('T')?ts:Number(ts)*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
@@ -46,7 +51,8 @@ async function loadState(render=true){
   $('#connectionText').textContent={connected:'飞书已连接',starting:'正在启动',connecting:'正在连接',reconnecting:'正在重连',error:'连接异常'}[status.connection]||status.connection;
   $('#toggleAutomation').textContent=status.automation_enabled?'暂停自动回复':'恢复自动回复';
   $('.tiny-badge').textContent=status.active_calls?`处理 ${status.active_calls} 项中`:status.connection==='connected'?'已就绪':'待连接';
-  const cards=[['未完成待办',tasks.filter(t=>t.status!=='done').length,'待处理、进行中与需决定事项','☷','unfinished'],['需要你决定',tasks.filter(t=>t.status==='needs_attention').length,'查看需要判断的事项','◇','needs_attention'],['建立联系',personas.filter(p=>p.kind==='person').length,`${conversations.filter(c=>c.kind==='group').length} 个群聊 · 查看角色档案`,'♧','personas'],['已完成',tasks.filter(t=>t.status==='done').length,'查看已完成的待办','↗','done']];
+  const counts=state.data.task_counts||{};
+  const cards=[['未完成待办',counts.unfinished??tasks.filter(t=>t.status!=='done').length,'待处理、进行中与需决定事项','☷','unfinished'],['需要你决定',counts.needs_attention??tasks.filter(t=>t.status==='needs_attention').length,'查看需要判断的事项','◇','needs_attention'],['建立联系',personas.filter(p=>p.kind==='person').length,`${conversations.filter(c=>c.kind==='group').length} 个群聊 · 查看角色档案`,'♧','personas'],['已完成',counts.done??tasks.filter(t=>t.status==='done').length,'查看已完成的待办','↗','done']];
   setHtml($('#stats'),cards.map(([label,value,note,icon,target])=>`<button type="button" class="stat" data-stat="${target}"><span class="stat-label">${label}</span><span class="stat-icon" aria-hidden="true">${icon}</span><span class="stat-value">${value}</span><span class="stat-note">${note}</span></button>`).join(''));
   if($('#humanPauseStatus')){const c=conversations.find(c=>c.chat_id===state.chat);$('#humanPauseStatus').textContent=c?.human_pause_until?' · '+humanPauseLabel(c):'';}
   document.querySelectorAll('[data-auto-switch]').forEach(el=>{const p=personas.find(p=>p.key===el.dataset.autoSwitch);if(p&&!el.disabled)el.checked=p.mode==='auto';});
@@ -66,23 +72,46 @@ function renderView(){
 }
 function setHtml(element,html){if(element.innerHTML!==html)element.innerHTML=html;}
 function taskRow(t){return `<div class="task-row"><button class="task-dot ${t.status==='done'?'done':''}" data-done="${t.id}" aria-label="${t.status==='done'?'重新打开任务':'标记完成'}">${t.status==='done'?'✓':''}</button><div class="task-content"><button type="button" class="task-title" data-task="${t.id}">${esc(t.title)}</button><div class="task-meta"><span>${esc(chatName(t.chat_id))}</span><span>·</span><span>${esc(t.due_at||timeLabel(t.created_at))}</span>${t.priority==='high'?'<span class="badge high">优先处理</span>':''}${t.status==='needs_attention'?badge(t.status):''}</div></div><button class="button ghost" data-task="${t.id}">处理 →</button></div>`;}
+async function loadList(key){
+  const request=++listRequests[key], view=key==='tasks'?'home':'activity';
+  const target=$(`#${key}List`), controls=$(`#${key}Pages`);
+  if(!target)return;
+  const status=key==='tasks'?state.filter:activityStatus;
+  const params=new URLSearchParams({status,page:pages[key].page,page_size:pages[key].size});
+  target.setAttribute('aria-busy','true');
+  try{
+    const data=await api(`/api/${key}/page?${params}`);
+    if(request!==listRequests[key]||state.view!==view||!target.isConnected)return;
+    pages[key].page=data.page;
+    if(key==='tasks')state.pageTasks=data.items;
+    setHtml(target,data.items.map(key==='tasks'?taskRow:activityRow).join('')||empty('当前分类没有记录','试试其他分类，新的记录会出现在这里。'));
+    renderPager(controls,key,data);
+    $(`#${key}LoadStatus`).textContent='';
+  }catch(error){
+    if(request===listRequests[key]&&target.isConnected)$(`#${key}LoadStatus`).textContent='加载失败，点击右上角刷新重试。'+error.message;
+  }finally{if(request===listRequests[key])target.removeAttribute('aria-busy');}
+}
 function renderHome(){
-  let tasks=state.data.tasks;
-  const filtered=tasks.filter(t=>state.filter==='all'||(state.filter==='unfinished'?t.status!=='done':state.filter==='open'?t.status==='open':t.status===state.filter));
-  setHtml($('#mainView'),`<div class="card"><div class="card-head"><div><h2>我的待办 <span class="subtle">${tasks.filter(t=>t.status!=='done').length} 项</span></h2></div><button class="button secondary" id="newTask">＋ 添加待办</button></div><div class="tabs">${[['unfinished','未完成'],['open','待处理'],['in_progress','进行中'],['needs_attention','需决定'],['done','已完成'],['all','全部']].map(([v,n])=>`<button class="tab ${v===state.filter?'active':''}" data-filter="${v}" aria-pressed="${v===state.filter}">${n}</button>`).join('')}</div>${filtered.length?filtered.map(taskRow).join(''):empty('当前分类没有待办','你可以添加待办，或切换分类查看其他事项。')}</div><div class="card"><div class="card-head"><div><h2>最近的联系</h2></div><button class="button ghost" data-view="conversations">全部会话 →</button></div>${state.data.conversations.slice(0,4).map(conversationRow).join('')||empty('等待新的联系','连接飞书后，收到的会话会显示在这里。')}</div>${state.data.status.error?`<div class="hint danger-text">${esc(state.data.status.error)}</div>`:''}`);
+  if(!$('#tasksList'))$('#mainView').innerHTML=`<div class="card"><div class="card-head"><h2>我的待办</h2><button class="button secondary" id="newTask">＋ 添加待办</button></div><div class="tabs" id="taskTabs" aria-label="待办状态"></div><p id="tasksLoadStatus" class="list-status" role="status">正在加载待办…</p><div id="tasksList"></div><div id="tasksPages"></div></div><div class="card"><div class="card-head"><h2>最近的联系</h2><button class="button ghost" data-view="conversations">全部会话 →</button></div><div id="recentContacts"></div></div><div id="homeError" class="hint danger-text" hidden></div>`;
+  setHtml($('#taskTabs'),[['unfinished','未完成'],['open','待处理'],['in_progress','进行中'],['needs_attention','需决定'],['done','已完成'],['all','全部']].map(([v,n])=>`<button class="tab ${v===state.filter?'active':''}" data-filter="${v}" aria-pressed="${v===state.filter}">${n}</button>`).join(''));
+  setHtml($('#recentContacts'),state.data.conversations.slice(0,4).map(conversationRow).join('')||empty('等待新的联系','连接飞书后，收到的会话会显示在这里。'));
+  $('#homeError').hidden=!state.data.status.error;$('#homeError').textContent=state.data.status.error||'';
+  loadList('tasks');
 }
 function conversationRow(c){return `<button type="button" class="conversation-row ${state.chat===c.chat_id?'selected':''}" data-chat="${esc(c.chat_id)}"><span class="avatar">${esc(c.kind==='group'?'群':c.name.slice(0,1))}</span><div><h3>${esc(c.name)}${c.kind==='group'?'<span class="badge group">群聊</span>':''}</h3><p>${esc(displayContent(c.last_message)||c.overview||'暂无消息')}</p></div>${c.open_tasks?`<span class="badge">${c.open_tasks} 项待办</span>`:''}</button>`;}
 function renderConversationList(){
   const query=state.conversationQuery.trim().toLocaleLowerCase();
   const matches=state.data.conversations.filter(c=>`${c.name} ${c.overview||''}`.toLocaleLowerCase().includes(query));
-  setHtml($('#conversationList'),matches.map(conversationRow).join('')||empty(query?'没有找到匹配的会话':'暂无会话',query?'试试其他姓名或关键词。':'连接飞书后，收到的会话会显示在这里。'));
+  const data=pageSlice(matches,pages.conversations.page,pages.conversations.size);pages.conversations.page=data.page;
+  renderPager($('#conversationPages'),'conversations',data);
+  setHtml($('#conversationList'),data.items.map(conversationRow).join('')||empty(query?'没有找到匹配的会话':'暂无会话',query?'试试其他姓名或关键词。':'连接飞书后，收到的会话会显示在这里。'));
   $('#conversationCount').textContent=query?`${matches.length} / ${state.data.conversations.length} 个会话`:`${matches.length} 个会话`;
 }
 function renderConversations(){
   state.chat=null;document.body.dataset.chatOpen='false';
-  $('#mainView').innerHTML=`<div class="card chat-list-card"><div class="card-head"><h2>消息</h2><span class="subtle" id="conversationCount"></span></div><div class="list-search"><input id="conversationSearch" type="search" aria-label="搜索联系人或群聊" placeholder="搜索联系人或群聊" value="${esc(state.conversationQuery)}"></div><p id="conversationLoadStatus" class="subtle" role="status"></p><div id="conversationList"></div></div>`;
+  $('#mainView').innerHTML=`<div class="card chat-list-card"><div class="card-head"><h2>消息</h2><span class="subtle" id="conversationCount"></span></div><div class="list-search"><input id="conversationSearch" type="search" aria-label="搜索联系人或群聊" placeholder="搜索联系人或群聊" value="${esc(state.conversationQuery)}"></div><p id="conversationLoadStatus" class="subtle" role="status"></p><div id="conversationList"></div><div id="conversationPages"></div></div>`;
   renderConversationList();
-  $('#conversationSearch').addEventListener('input',e=>{state.conversationQuery=e.target.value;renderConversationList();});
+  $('#conversationSearch').addEventListener('input',e=>{state.conversationQuery=e.target.value;pages.conversations.page=1;renderConversationList();});
 }
 async function selectChat(id){
   if(state.view!=='conversations'){state.view='conversations';renderView();}
@@ -199,35 +228,64 @@ function groupReplySelect(p,form=false){return `<select ${form?'name="group_repl
 function autoReplySwitch(p){if(p.kind==='group')return groupReplySelect(p);return `<label class="auto-reply-switch"><input type="checkbox" role="switch" aria-label="${esc(p.name)} 自动回复" data-auto-switch="${esc(p.key)}" ${p.mode==='auto'?'checked':''}><span>自动回复</span><strong data-auto-status="${esc(p.key)}">${p.mode==='auto'?'开启':p.mode==='draft'?'仅草稿':'关闭'}</strong></label>`;}
 function personaForm(p){return `<form class="form-grid persona-form" data-key="${esc(p.key)}"><label>角色 / 关系<input name="role" value="${esc(p.role)}" placeholder="例如：产品同事、项目负责人、客户"></label><label>你对这个人或群的了解<textarea name="description" rows="3" placeholder="负责什么、关注什么、沟通习惯、需要记住的背景">${esc(p.description)}</textarea></label><label>回复口吻<textarea name="reply_style" rows="2" placeholder="例如：直奔主题，少用表情；遇到排期先留待办">${esc(p.reply_style)}</textarea></label><label>自动处理方式${p.kind==='group'?groupReplySelect(p,true):`<select name="mode">${['auto','draft','off'].map(v=>`<option value="${v}" ${p.mode===v?'selected':''}>${statusNames[v]}</option>`).join('')}</select>`}</label><div><button class="button primary" type="submit">保存角色说明</button></div></form>`;}
 function renderPersonas(){
-  $('#mainView').innerHTML=`<div class="card"><div class="card-head"><h2>联系人与群的角色档案</h2><span class="subtle">${state.data.personas.length} 份</span></div>${state.data.personas.map(p=>`<div class="persona-row"><span class="avatar">${esc(p.kind==='group'?'群':p.name.slice(0,1))}</span><div><div class="row-flex"><h3>${esc(p.name)}</h3>${autoReplySwitch(p)}</div><p>${esc(p.role||'未设置角色')}</p><p>${esc(p.description||'')}</p><details class="form-inline"><summary class="subtle">编辑角色说明</summary><div class="section-pad">${personaForm(p)}</div></details></div></div>`).join('')||empty('暂无联系人','联系人会从收到的消息中自动建立。')}</div>`;
+  $('#mainView').innerHTML=`<div class="card"><div class="card-head"><h2>角色档案</h2><span class="subtle">展开档案编辑回复习惯</span></div><div class="list-toolbar"><input id="personaSearch" type="search" aria-label="搜索角色档案" placeholder="搜索姓名、角色或背景" value="${esc(personaQuery)}"><select id="personaKind" aria-label="角色类型">${[['all','全部类型'],['person','联系人'],['group','群聊']].map(([v,n])=>`<option value="${v}" ${personaKind===v?'selected':''}>${n}</option>`).join('')}</select></div><div id="personaRows">${state.data.personas.map(p=>`<div class="persona-row" data-persona-row="${esc(p.key)}"><span class="avatar">${esc(p.kind==='group'?'群':p.name.slice(0,1))}</span><div><div class="row-flex"><h3>${esc(p.name)}</h3>${autoReplySwitch(p)}</div><p>${esc(p.role||'未设置角色')}</p><details class="form-inline"><summary>编辑角色说明</summary><div class="section-pad">${personaForm(p)}</div></details></div></div>`).join('')}</div><div id="personaEmpty" hidden>${empty('没有匹配的角色','试试其他姓名或类型。')}</div><div id="personasPages"></div></div>`;
+  $('#personaSearch').oninput=e=>{personaQuery=e.target.value;pages.personas.page=1;filterPersonas();};
+  $('#personaKind').onchange=e=>{personaKind=e.target.value;pages.personas.page=1;filterPersonas();};
+  filterPersonas();
 }
+function filterPersonas(){
+  const query=personaQuery.trim().toLocaleLowerCase();
+  const matches=state.data.personas.filter(p=>(personaKind==='all'||p.kind===personaKind)&&`${p.name} ${p.role} ${p.description}`.toLocaleLowerCase().includes(query));
+  const data=pageSlice(matches,pages.personas.page,pages.personas.size);pages.personas.page=data.page;
+  const visible=new Set(data.items.map(p=>p.key));
+  document.querySelectorAll('[data-persona-row]').forEach(row=>row.hidden=!visible.has(row.dataset.personaRow));
+  $('#personaEmpty').hidden=!!matches.length;
+  renderPager($('#personasPages'),'personas',data);
+}
+function activityRow(a){return `<div class="activity-row"><div class="meta"><span>发给 ${esc(chatName(a.chat_id))} · ${esc(timeLabel(a.created_at))}</span>${badge(a.status)}</div><details class="activity-detail" data-section="action-${a.id}" ${folds.get(`action-${a.id}`)?'open':''}><summary>${esc(a.content||'（无文本内容）')}</summary><p>${esc(a.content)}</p>${a.error?`<p class="danger-text">${esc(a.error)}</p>`:''}</details></div>`;}
 function renderActivity(){
-  setHtml($('#mainView'),`<div class="card"><div class="card-head"><h2>发送与执行记录</h2></div>${state.data.actions.map(a=>`<div class="activity-row"><div class="meta"><span>发给 ${esc(chatName(a.chat_id))} · ${esc(timeLabel(a.created_at))}</span>${badge(a.status)}</div><p>${esc(a.content)}</p>${a.error?`<p class="danger-text">${esc(a.error)}</p>`:''}</div>`).join('')||empty('还没有执行记录','主动发送和自动回复都会留在这里。')}</div>`);
+  if(!$('#actionsList')){
+    $('#mainView').innerHTML=`<div class="card"><div class="card-head"><h2>发送与执行记录</h2><select id="activityStatus" aria-label="执行状态">${[['all','全部状态'],['sent','已发送'],['pending','处理中'],['failed','失败'],['uncertain','待核对']].map(([v,n])=>`<option value="${v}" ${activityStatus===v?'selected':''}>${n}</option>`).join('')}</select></div><p id="actionsLoadStatus" class="list-status" role="status">正在加载执行记录…</p><div id="actionsList"></div><div id="actionsPages"></div></div>`;
+    $('#activityStatus').onchange=e=>{activityStatus=e.target.value;pages.actions.page=1;loadList('actions');};
+  }
+  loadList('actions');
 }
+function settingSection(key,title,description,body,open=false){return `<details class="settings-section" data-section="${key}" ${(folds.get(key)??open)?'open':''}><summary><span><strong>${title}</strong><small>${description}</small></span><span class="fold-chevron" aria-hidden="true">⌄</span></summary><div class="settings-body">${body}</div></details>`;}
 function renderSettings(){
-  $('#mainView').innerHTML=`<div class="card"><div class="card-head"><h2>回复设置</h2></div><div class="section-pad"><form id="settingsForm" class="form-grid"><label>你的角色、工作习惯与回复原则<textarea id="ownRules" rows="10">${esc(state.data.status.own_rules)}</textarea></label><label>回复尾缀<input id="replySuffix" maxlength="200" value="${esc(state.data.status.reply_suffix)}" placeholder="例如：reply by Bot"></label><label>人工接管等待（分钟，0 为关闭）<input id="humanPauseMinutes" type="number" min="0" max="1440" step="0.1" required value="${esc((state.data.status.human_pause_seconds??120)/60)}"></label><label>消息停顿时间（秒）<input id="batchDelay" type="number" min="0.1" max="30" step="0.1" required value="${esc(state.data.status.batch_delay??1.5)}"></label><label>最长等待时间（秒）<input id="batchMaxWait" type="number" min="0.1" max="60" step="0.1" required value="${esc(state.data.status.batch_max_wait??5)}"></label><div><button class="button primary">保存设置</button></div></form><div class="label-heading">当前状态</div><p class="subtle">${esc(state.data.status.rules)}<br>模型：${esc(state.data.status.model||'默认模型')}<br>排队中的消息：${state.data.status.queued_messages}<br>自动回复：${state.data.status.automation_enabled?'运行中':'已暂停，仅生成草稿'}</p></div></div>`;
-  $('#settingsForm').addEventListener('submit',async e=>{e.preventDefault();try{await api('/api/settings',mutation('PATCH',{own_rules:$('#ownRules').value,reply_suffix:$('#replySuffix').value,human_pause_seconds:Number($('#humanPauseMinutes').value)*60,batch_delay:Number($('#batchDelay').value),batch_max_wait:Number($('#batchMaxWait').value)}));toast('数字人设置已保存');await loadState(false);}catch(e){toast(e.message);}});
-  const knowledge=document.createElement('div');knowledge.id='workKnowledge';knowledge.className='card';
-  $('#mainView').prepend(knowledge);
-  loadKnowledge(knowledge).catch(e=>{if(knowledge.isConnected)knowledge.textContent=e.message;});
+  const status=state.data.status;
+  $('#mainView').innerHTML=`<div class="settings-layout"><p class="view-description">按需要展开设置。回复设置与工作资料分别保存。</p><form id="settingsForm">
+    ${settingSection('reply','回复习惯','设置数字人的角色、口吻和消息尾缀',`<div class="form-grid"><label>角色、工作习惯与回复原则<textarea id="ownRules" rows="5">${esc(status.own_rules)}</textarea></label><label>回复尾缀<input id="replySuffix" maxlength="200" value="${esc(status.reply_suffix)}" placeholder="留空则不添加尾缀"></label></div>`,true)}
+    ${settingSection('automation','自动处理','控制人工接管和连续消息的等待时间',`<div class="form-grid"><label>人工接管等待（分钟）<input id="humanPauseMinutes" type="number" min="0" max="1440" step="0.1" required value="${esc((status.human_pause_seconds??120)/60)}"><span class="field-help">你手动回复后，自动回复暂停多久；0 表示关闭等待。</span></label><div class="field-pair"><label>消息停顿时间（秒）<input id="batchDelay" type="number" min="0.1" max="30" step="0.1" required value="${esc(status.batch_delay??1.5)}"></label><label>最长等待时间（秒）<input id="batchMaxWait" type="number" min="0.1" max="60" step="0.1" required value="${esc(status.batch_max_wait??5)}"></label></div><p class="field-help">等待对方说完再统一处理。最长等待时间不能短于停顿时间。</p></div>`)}
+    <div class="settings-save"><span id="settingsSaveStatus" class="subtle" role="status">修改后点击保存</span><button type="submit" class="button primary">保存回复设置</button></div></form>
+    ${settingSection('knowledge','工作资料','选择项目、整理职责，并指定可使用资料的会话','<div id="workKnowledge"><p class="subtle">正在加载工作资料…</p></div>')}
+    ${settingSection('runtime','运行状态','查看连接、模型与当前处理情况',`<dl class="status-grid"><dt>飞书连接</dt><dd>${esc($('#connectionText').textContent)}</dd><dt>当前模型</dt><dd>${esc(status.model||'默认模型')}</dd><dt>排队消息</dt><dd>${status.queued_messages}</dd><dt>自动回复</dt><dd>${status.automation_enabled?'运行中':'已暂停，仅生成草稿'}</dd></dl><p class="field-help">${esc(status.rules)}</p>${status.error?`<p class="danger-text">${esc(status.error)}</p>`:''}`)}
+  </div>`;
+  $('#settingsForm').oninput=()=>$('#settingsSaveStatus').textContent='有未保存的修改';
+  $('#settingsForm').addEventListener('submit',e=>{e.preventDefault();withBusy(e.submitter,async()=>{
+    if(Number($('#batchMaxWait').value)<Number($('#batchDelay').value)){$('[data-section="automation"]').open=true;$('#batchMaxWait').focus();throw Error('最长等待时间不能短于消息停顿时间');}
+    await api('/api/settings',mutation('PATCH',{own_rules:$('#ownRules').value,reply_suffix:$('#replySuffix').value,human_pause_seconds:Number($('#humanPauseMinutes').value)*60,batch_delay:Number($('#batchDelay').value),batch_max_wait:Number($('#batchMaxWait').value)}));
+    $('#settingsSaveStatus').textContent='已保存';toast('回复设置已保存');await loadState(false);
+  });});
+  const knowledge=$('#workKnowledge');
+  loadKnowledge(knowledge).catch(e=>{if(knowledge.isConnected)knowledge.textContent='资料加载失败：'+e.message;});
 }
 
 function knowledgeSources(p){return `<details class="knowledge-sources"><summary>${p.learned_at?'上次整理 '+esc(timeLabel(p.learned_at))+' · ':''}${(p.sources||[]).length} 条工作聊天来源</summary><label>聊天对应的项目目录<input data-field="archive_path" value="${esc(p.archive_path||p.path)}" placeholder="默认与项目目录相同"></label><p class="subtle">代码搬迁时，这里保留聊天记录中的旧目录，上方填写当前代码目录。</p><ul>${(p.sources||[]).map(s=>`<li>${s.kind==='active'?'未归档':'已归档'} · ${esc(s.time)} · ${esc(s.session_id)}</li>`).join('')||'<li>尚未从工作聊天整理。</li>'}</ul></details>`;}
 function knowledgeProject(p){
   const chats=state.data.conversations;
-  return `<section class="knowledge-project" data-project-id="${esc(p.id||crypto.randomUUID())}">
-    <div class="knowledge-project-head"><h3>${esc(p.name||'新项目')}</h3><button type="button" class="button ghost" data-remove-project>移除</button></div>
+  return `<details class="knowledge-project" data-project-id="${esc(p.id||crypto.randomUUID())}">
+    <summary class="knowledge-project-head"><strong>${esc(p.name||'新项目')}</strong><span class="subtle">展开编辑</span></summary><div class="knowledge-project-body"><div class="project-actions"><button type="button" class="button ghost" data-remove-project>移除项目</button></div>
     <div class="knowledge-fields"><label>项目名称<input data-field="name" maxlength="100" required value="${esc(p.name)}" placeholder="例如：VehicleLogger"></label><label>代码与文档所在目录<input data-field="path" required value="${esc(p.path)}" placeholder="项目的本机绝对路径"></label></div>
     <label>项目别名 / 关键词<input data-field="aliases" value="${esc((p.aliases||[]).join('，'))}" placeholder="例如：DTU，设备日志，采集器"></label>
     <details class="knowledge-chats"><summary>用于回复哪些会话 · <span data-chat-count>${(p.chat_ids||[]).length}</span> 个</summary><p class="subtle">只在选中的会话中使用此项目的职责档案、代码和文档。不选会话时仅整理档案。</p><div class="knowledge-chat-tools"><input type="search" data-knowledge-chat-search placeholder="搜索联系人或群聊" aria-label="搜索此项目的适用会话"><button type="button" class="button ghost" data-select-chats="all">全选</button><button type="button" class="button ghost" data-select-chats="none">清空</button></div><div class="knowledge-chat-list">${chats.map(c=>`<label><input type="checkbox" data-knowledge-chat value="${esc(c.chat_id)}" ${(p.chat_ids||[]).includes(c.chat_id)?'checked':''}><span>${esc(c.name)}${c.kind==='group'?'（群聊）':''}</span></label>`).join('')||'<p class="subtle">暂无会话，建立联系后可在这里选择。</p>'}</div><p class="subtle" data-chat-empty hidden>没有匹配的会话</p></details>
     <label>我的职责与工作背景<textarea data-field="profile" rows="6" maxlength="6000" placeholder="点击“一键了解工作内容”从相关工作聊天整理，也可以直接填写或修改。">${esc(p.profile)}</textarea></label>
     ${knowledgeSources(p)}
-  </section>`;
+  </div></details>`;
 }
 
 async function loadKnowledge(container){
   const data=await api('/api/knowledge');if(!container.isConnected)return;
-  container.innerHTML=`<div class="card-head"><div><h2>了解我的工作</h2><p class="subtle">从已归档和未归档的 Codex 聊天中筛选工作内容、整理职责，排除闲聊和生活话题。</p></div></div>
+  container.innerHTML=`<p class="field-help">从工作聊天整理职责；仅在你选择的会话中使用项目资料。</p>
     <div class="section-pad"><form id="knowledgeForm" class="form-grid"><details><summary>聊天来源目录（已归档与未归档）</summary><label>已归档聊天目录<input id="knowledgeArchive" required value="${esc(data.archive_dir)}" aria-label="已归档聊天目录"></label><label>未归档聊天目录<input id="knowledgeSessions" required value="${esc(data.sessions_dir)}" aria-label="未归档聊天目录"></label><p class="subtle">每个项目读取最近 30 条匹配聊天的近期问答，先筛选相关工作片段再整理，不包含工具输出或推理记录。</p></details>
     <div class="knowledge-toolbar"><button type="button" class="button secondary" id="discoverWork">从聊天发现项目</button><button type="button" class="button ghost" id="addWorkProject">＋ 手动添加项目</button></div><div id="knowledgeCandidates"></div>
     <div id="knowledgeProjects">${data.projects.map(knowledgeProject).join('')}</div>
@@ -254,6 +312,7 @@ async function loadKnowledge(container){
     const key=normalizePath(p.archive_path||p.path);
     if(key&&removedProjects.has(key)){projects.append(removedProjects.get(key));removedProjects.delete(key);}
     else projects.insertAdjacentHTML('beforeend',knowledgeProject(p));
+    const added=projects.lastElementChild;if(added){added.open=true;added.querySelector('[data-field="name"]')?.focus();}
     syncCandidates();
     status.textContent='项目已选中，保存后生效。';
   }
@@ -326,7 +385,7 @@ async function loadKnowledge(container){
   else if(!data.projects.length)status.textContent='先从聊天发现项目，或手动填写项目目录。';
 }
 function showTask(id){
-  const t=state.data.tasks.find(t=>t.id===Number(id));if(!t)return;
+  const t=(state.pageTasks||[]).find(t=>t.id===Number(id))||state.data.tasks.find(t=>t.id===Number(id));if(!t)return;
   state.task=t;$('#taskTitle').textContent=t.title;$('#taskDetail').textContent=`${chatName(t.chat_id)} · ${statusNames[t.status]}${t.due_at?' · '+t.due_at:''}\n\n${t.details||'暂无补充说明'}`;$('#taskReply').value=t.draft_reply||'';$('#taskStatus').value=t.status;$('#taskPriority').value=t.priority;$('#taskPolishInstruction').value='';$('#taskPolishHint').textContent='';$('#taskSuffixPreview').textContent=state.data.status.reply_suffix?'发送时附加尾缀：'+state.data.status.reply_suffix:'当前未设置回复尾缀';$('#taskDialog').showModal();
 }
 async function waitJob(id,onUpdate){
@@ -345,14 +404,33 @@ async function command(text){
   addBubble(text,'user');const el=addBubble('正在整理上下文并处理…');el.classList.add('loading');$('#controlSubmit').disabled=true;
   try{const j=await api('/api/control',mutation('POST',{text}));const result=await waitJob(j.job_id);el.classList.remove('loading');el.textContent=result.answer||'已处理。';for(const action of result.actions||[]){const row=document.createElement('div');row.className='control-result'+(action.ok?'':' error');let label={send_message:'发送消息',create_task:'创建待办',complete_task:'完成任务',update_profile:'更新角色'}[action.type]||action.type;row.textContent=action.ok?`${label}：${action.data.status?statusNames[action.data.status]||action.data.status:'已完成'}`:`${label}：${action.error}`;el.append(row);}await loadState(state.view==='home'||state.view==='activity');}catch(e){el.classList.remove('loading');el.textContent='处理未完成：'+e.message;}finally{$('#controlSubmit').disabled=false;$('#controlThread').scrollTop=$('#controlThread').scrollHeight;if($('#assistantPanel').hidden)$('#assistantUnread').hidden=false;}
 }
+function changePage(key){
+  if(key==='tasks'||key==='actions')loadList(key);
+  else if(key==='conversations')renderConversationList();
+  else filterPersonas();
+}
+document.addEventListener('click',e=>{
+  const button=e.target.closest('[data-page-list]');if(!button||button.disabled)return;
+  const key=button.dataset.pageList;if(!pages[key])return;
+  pages[key].page=Number(button.dataset.page);changePage(key);
+});
+document.addEventListener('change',e=>{
+  const key=e.target.dataset.pageSize;if(!pages[key])return;
+  pages[key].size=Number(e.target.value);pages[key].page=1;changePage(key);
+});
+document.addEventListener('toggle',e=>{if(e.target.dataset.section)folds.set(e.target.dataset.section,e.target.open);},true);
+document.addEventListener('invalid',e=>{let parent=e.target.parentElement;while(parent){if(parent.tagName==='DETAILS')parent.open=true;parent=parent.parentElement;}},true);
+document.addEventListener('input',e=>{
+  if(e.target.matches('[data-field="name"]'))e.target.closest('[data-project-id]').querySelector('summary strong').textContent=e.target.value||'新项目';
+});
 document.addEventListener('click',async e=>{
   try{
-  const stat=e.target.closest('[data-stat]');if(stat){if(stat.dataset.stat==='personas')state.view='personas';else{state.view='home';state.filter=stat.dataset.stat;}renderView();$('#pageTitle').focus({preventScroll:true});return;}
+  const stat=e.target.closest('[data-stat]');if(stat){if(stat.dataset.stat==='personas')state.view='personas';else{state.view='home';state.filter=stat.dataset.stat;pages.tasks.page=1;}renderView();$('#pageTitle').focus({preventScroll:true});return;}
   const image=e.target.closest('.message-image');if(image){let viewer=$('#imageViewer');if(!viewer){viewer=document.createElement('dialog');viewer.id='imageViewer';viewer.innerHTML='<button class="icon-button" data-close aria-label="关闭图片">×</button><img alt="图片预览">';document.body.append(viewer);}viewer.querySelector('img').src=image.src;viewer.showModal();return;}
-  const nav=e.target.closest('button[data-view]');if(nav){if(!state.data)return;if(state.view!==nav.dataset.view){state.view=nav.dataset.view;renderView();}return;}
-  const filter=e.target.closest('[data-filter]');if(filter){state.filter=filter.dataset.filter;renderHome();}
+  const nav=e.target.closest('button[data-view]');if(nav){if(!state.data)return;if(state.view!==nav.dataset.view){state.view=nav.dataset.view;renderView();window.scrollTo(0,0);}return;}
+  const filter=e.target.closest('[data-filter]');if(filter){state.filter=filter.dataset.filter;pages.tasks.page=1;renderHome();}
   const task=e.target.closest('[data-task]');if(task)showTask(task.dataset.task);
-  const done=e.target.closest('[data-done]');if(done){const t=state.data.tasks.find(t=>t.id===Number(done.dataset.done));await withBusy(done,async()=>{await api(`/api/tasks/${t.id}`,mutation('PATCH',{status:t.status==='done'?'open':'done'}));await loadState();});}
+  const done=e.target.closest('[data-done]');if(done){const t=(state.pageTasks||[]).find(t=>t.id===Number(done.dataset.done))||state.data.tasks.find(t=>t.id===Number(done.dataset.done));await withBusy(done,async()=>{await api(`/api/tasks/${t.id}`,mutation('PATCH',{status:t.status==='done'?'open':'done'}));await loadState();});}
   const chat=e.target.closest('[data-chat]');if(chat)await selectChat(chat.dataset.chat);
   const close=e.target.closest('[data-close]');if(close)close.closest('dialog').close();
   const forget=e.target.closest('[data-forget]');if(forget){await api(`/api/memories/${forget.dataset.forget}`,{method:'DELETE'});await selectChat(state.chat);}
