@@ -50,7 +50,6 @@ async function loadState(render=true){
   $('#connectionDot').className=status.connection==='connected'?'connected':'';
   $('#connectionText').textContent={connected:'飞书已连接',starting:'正在启动',connecting:'正在连接',reconnecting:'正在重连',error:'连接异常'}[status.connection]||status.connection;
   $('#toggleAutomation').textContent=status.automation_enabled?'暂停自动回复':'恢复自动回复';
-  $('.tiny-badge').textContent=status.active_calls?`处理 ${status.active_calls} 项中`:status.connection==='connected'?'已就绪':'待连接';
   const counts=state.data.task_counts||{};
   const cards=[['未完成待办',counts.unfinished??tasks.filter(t=>t.status!=='done').length,'待处理、进行中与需决定事项','☷','unfinished'],['需要你决定',counts.needs_attention??tasks.filter(t=>t.status==='needs_attention').length,'查看需要判断的事项','◇','needs_attention'],['建立联系',personas.filter(p=>p.kind==='person').length,`${conversations.filter(c=>c.kind==='group').length} 个群聊 · 查看角色档案`,'♧','personas'],['已完成',counts.done??tasks.filter(t=>t.status==='done').length,'查看已完成的待办','↗','done']];
   setHtml($('#stats'),cards.map(([label,value,note,icon,target])=>`<button type="button" class="stat" data-stat="${target}"><span class="stat-label">${label}</span><span class="stat-icon" aria-hidden="true">${icon}</span><span class="stat-value">${value}</span><span class="stat-note">${note}</span></button>`).join(''));
@@ -391,6 +390,13 @@ function showTask(id){
 async function waitJob(id,onUpdate){
   while(true){const j=await api(`/api/jobs/${id}`);if(j.status==='done')return j.result;if(j.status==='failed')throw Error(j.error);if(onUpdate)await onUpdate(j);await new Promise(r=>setTimeout(r,1500));}
 }
+const controlWelcome = $('#controlThread').innerHTML;
+let controlBusy = false;
+function setControlBusy(busy){
+  controlBusy=busy;
+  $('#controlSubmit').disabled=busy;$('#assistantClear').disabled=busy;
+  document.querySelectorAll('[data-command]').forEach(button=>{button.disabled=busy;});
+}
 function addBubble(text, kind='assistant'){let el=document.createElement('div');el.className=kind+'-bubble';el.textContent=text;$('#controlThread').append(el);$('#controlThread').scrollTop=$('#controlThread').scrollHeight;return el;}
 function setAssistantOpen(open){
   $('#assistantPanel').hidden=!open;$('#assistantLauncher').setAttribute('aria-expanded',String(open));
@@ -399,10 +405,26 @@ function setAssistantOpen(open){
 }
 $('#assistantLauncher').addEventListener('click',()=>setAssistantOpen($('#assistantPanel').hidden));
 $('#assistantClose').addEventListener('click',()=>setAssistantOpen(false));
+$('#assistantClear').addEventListener('click',async()=>{
+  if(controlBusy)return;
+  setControlBusy(true);
+  try{
+    // Finish the initial read before clearing so late history cannot reappear.
+    await controlHistoryReady;
+    await api('/api/control/history',{method:'DELETE'});
+    $('#controlThread').innerHTML=controlWelcome;
+    $('#assistantUnread').hidden=true;
+    $('#controlText').focus();
+    toast('对话已清空，可以开始新的话题');
+  }catch(error){toast(error.message);}finally{setControlBusy(false);}
+});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('#assistantPanel').hidden&&!document.querySelector('dialog[open]')){e.preventDefault();setAssistantOpen(false);}});
 async function command(text){
+  if(controlBusy)return;
+  setControlBusy(true);
+  await controlHistoryReady;
   addBubble(text,'user');const el=addBubble('正在整理上下文并处理…');el.classList.add('loading');$('#controlSubmit').disabled=true;
-  try{const j=await api('/api/control',mutation('POST',{text}));const result=await waitJob(j.job_id);el.classList.remove('loading');el.textContent=result.answer||'已处理。';for(const action of result.actions||[]){const row=document.createElement('div');row.className='control-result'+(action.ok?'':' error');let label={send_message:'发送消息',create_task:'创建待办',complete_task:'完成任务',update_profile:'更新角色'}[action.type]||action.type;row.textContent=action.ok?`${label}：${action.data.status?statusNames[action.data.status]||action.data.status:'已完成'}`:`${label}：${action.error}`;el.append(row);}await loadState(state.view==='home'||state.view==='activity');}catch(e){el.classList.remove('loading');el.textContent='处理未完成：'+e.message;}finally{$('#controlSubmit').disabled=false;$('#controlThread').scrollTop=$('#controlThread').scrollHeight;if($('#assistantPanel').hidden)$('#assistantUnread').hidden=false;}
+  try{const j=await api('/api/control',mutation('POST',{text}));const result=await waitJob(j.job_id);el.classList.remove('loading');el.textContent=result.answer||'已处理。';for(const action of result.actions||[]){const row=document.createElement('div');row.className='control-result'+(action.ok?'':' error');let label={send_message:'发送消息',create_task:'创建待办',complete_task:'完成任务',update_profile:'更新角色'}[action.type]||action.type;row.textContent=action.ok?`${label}：${action.data.status?statusNames[action.data.status]||action.data.status:'已完成'}`:`${label}：${action.error}`;el.append(row);}await loadState(state.view==='home'||state.view==='activity');}catch(e){el.classList.remove('loading');el.textContent='处理未完成：'+e.message;}finally{setControlBusy(false);$('#controlThread').scrollTop=$('#controlThread').scrollHeight;if($('#assistantPanel').hidden)$('#assistantUnread').hidden=false;}
 }
 function changePage(key){
   if(key==='tasks'||key==='actions')loadList(key);
@@ -459,7 +481,7 @@ document.addEventListener('change',async e=>{
 document.addEventListener('submit',async e=>{
   if(e.target.matches('.persona-form')){e.preventDefault();const fields=Object.fromEntries(new FormData(e.target));try{await api(`/api/personas/${encodeURIComponent(e.target.dataset.key)}`,mutation('PATCH',fields));toast('角色说明已保存，下次回复生效');await loadState(false);}catch(e){toast(e.message);}}
 });
-$('#controlForm').addEventListener('submit',e=>{e.preventDefault();const text=$('#controlText').value.trim();if(!text)return;$('#controlText').value='';command(text);});
+$('#controlForm').addEventListener('submit',e=>{e.preventDefault();if(controlBusy)return;const text=$('#controlText').value.trim();if(!text)return;$('#controlText').value='';command(text);});
 $('#controlText').addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter')$('#controlForm').requestSubmit();});
 $('#refresh').addEventListener('click',e=>withBusy(e.currentTarget,async()=>{await loadState();await refreshChatMessages();toast('已刷新，当前编辑内容已保留');}));
 $('#toggleAutomation').addEventListener('click',e=>withBusy(e.currentTarget,async()=>{await api('/api/settings',mutation('PATCH',{automation_enabled:!state.data.status.automation_enabled}));await loadState();toast(state.data.status.automation_enabled?'自动回复已恢复':'已暂停自动发送，新回复保留为草稿');}));
@@ -477,7 +499,7 @@ $('#taskPolish').addEventListener('click',async()=>{
 $('#taskReplyForm').addEventListener('submit',async e=>{e.preventDefault();let b=e.submitter;b.disabled=true;try{const r=await api(`/api/tasks/${state.task.id}/reply`,mutation('POST',{content:$('#taskReply').value,request_id:crypto.randomUUID()}));toast(statusNames[r.status]||r.status);if(r.status==='sent')$('#taskDialog').close();await loadState();}catch(e){toast(e.message);}finally{b.disabled=false;}});
 $('#newTaskForm').addEventListener('submit',async e=>{e.preventDefault();try{await api('/api/tasks',mutation('POST',{title:$('#newTaskTitle').value,details:$('#newTaskDetails').value,chat_id:$('#newTaskChat').value,priority:'normal'}));$('#newTaskDialog').close();e.target.reset();await loadState();toast('待办已添加');}catch(e){toast(e.message);}});
 $('#date').textContent=new Date().toLocaleDateString('zh-CN',{month:'long',day:'numeric',weekday:'long'});
-api('/api/control/history').then(jobs=>{for(const j of jobs){addBubble(j.input,'user');if(j.status==='done'){const r=JSON.parse(j.result);const summary=(r.actions||[]).map(a=>`${a.type}：${a.ok?(statusNames[a.data?.status]||'已完成'):a.error}`).join('\n');addBubble((r.answer||'已处理')+(summary?'\n\n'+summary:''));}else if(j.status==='failed')addBubble('处理未完成：'+j.error);else addBubble('这条指令正在后台处理，可稍后刷新查看结果。');}}).catch(()=>{});
+const controlHistoryReady = api('/api/control/history').then(jobs=>{for(const j of jobs){addBubble(j.input,'user');if(j.status==='done'){const r=JSON.parse(j.result);const summary=(r.actions||[]).map(a=>`${a.type}：${a.ok?(statusNames[a.data?.status]||'已完成'):a.error}`).join('\n');addBubble((r.answer||'已处理')+(summary?'\n\n'+summary:''));}else if(j.status==='failed')addBubble('处理未完成：'+j.error);else addBubble('这条指令正在后台处理，可稍后刷新查看结果。');}}).catch(()=>{});
 startPolling(async()=>{
   await loadState();
   await refreshChatMessages();

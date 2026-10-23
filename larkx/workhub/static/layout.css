@@ -70,3 +70,5 @@ button:disabled { cursor: not-allowed; }
   .settings-save { align-items: flex-start; }
 }
 @media (prefers-reduced-motion: reduce) { .fold-chevron { transition: none; } }
+
+#assistantPanel #assistantClear { flex-shrink: 0; padding: 6px 8px; min-height: 32px; font-size: 11px; white-space: nowrap; }

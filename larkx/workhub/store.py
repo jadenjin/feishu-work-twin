@@ -926,6 +926,15 @@ class HubStore:
             )
             return [record(r) for r in reversed(rows)]
 
+    def clear_control_history(self):
+        with self.storage.Session() as s:
+            history = s.query(Job).filter_by(kind="control")
+            if history.filter(Job.status.in_(["queued", "running"])).first():
+                raise ValueError("有指令正在执行，请等待处理完成后再清空对话")
+            # Actions and work data remain available after clearing the chat.
+            history.delete(synchronize_session=False)
+            s.commit()
+
     def update_job(self, job_id, status, result=None, error=""):
         with self.storage.Session() as s:
             row = s.get(Job, job_id)

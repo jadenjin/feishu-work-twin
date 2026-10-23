@@ -531,6 +531,11 @@ def create_app(runtime=None, start_bridge=True):
     async def control_history(request: Request):
         return hub(request).hub.control_history()
 
+    @app.delete("/api/control/history")
+    async def clear_control_history(request: Request):
+        hub(request).hub.clear_control_history()
+        return {"ok": True}
+
     @app.get("/api/jobs/{job_id}")
     async def job(job_id: str, request: Request):
         result = hub(request).hub.job(job_id)
