@@ -207,13 +207,130 @@ function renderActivity(){
 function renderSettings(){
   $('#mainView').innerHTML=`<div class="card"><div class="card-head"><h2>回复设置</h2></div><div class="section-pad"><form id="settingsForm" class="form-grid"><label>你的角色、工作习惯与回复原则<textarea id="ownRules" rows="10">${esc(state.data.status.own_rules)}</textarea></label><label>回复尾缀<input id="replySuffix" maxlength="200" value="${esc(state.data.status.reply_suffix)}" placeholder="例如：reply by Bot"></label><label>人工接管等待（分钟，0 为关闭）<input id="humanPauseMinutes" type="number" min="0" max="1440" step="0.1" required value="${esc((state.data.status.human_pause_seconds??120)/60)}"></label><label>消息停顿时间（秒）<input id="batchDelay" type="number" min="0.1" max="30" step="0.1" required value="${esc(state.data.status.batch_delay??1.5)}"></label><label>最长等待时间（秒）<input id="batchMaxWait" type="number" min="0.1" max="60" step="0.1" required value="${esc(state.data.status.batch_max_wait??5)}"></label><div><button class="button primary">保存设置</button></div></form><div class="label-heading">当前状态</div><p class="subtle">${esc(state.data.status.rules)}<br>模型：${esc(state.data.status.model||'默认模型')}<br>排队中的消息：${state.data.status.queued_messages}<br>自动回复：${state.data.status.automation_enabled?'运行中':'已暂停，仅生成草稿'}</p></div></div>`;
   $('#settingsForm').addEventListener('submit',async e=>{e.preventDefault();try{await api('/api/settings',mutation('PATCH',{own_rules:$('#ownRules').value,reply_suffix:$('#replySuffix').value,human_pause_seconds:Number($('#humanPauseMinutes').value)*60,batch_delay:Number($('#batchDelay').value),batch_max_wait:Number($('#batchMaxWait').value)}));toast('数字人设置已保存');await loadState(false);}catch(e){toast(e.message);}});
+  const knowledge=document.createElement('div');knowledge.id='workKnowledge';knowledge.className='card';
+  $('#mainView').prepend(knowledge);
+  loadKnowledge(knowledge).catch(e=>{if(knowledge.isConnected)knowledge.textContent=e.message;});
+}
+
+function knowledgeSources(p){return `<details class="knowledge-sources"><summary>${p.learned_at?'上次整理 '+esc(timeLabel(p.learned_at))+' · ':''}${(p.sources||[]).length} 条工作聊天来源</summary><label>聊天对应的项目目录<input data-field="archive_path" value="${esc(p.archive_path||p.path)}" placeholder="默认与项目目录相同"></label><p class="subtle">代码搬迁时，这里保留聊天记录中的旧目录，上方填写当前代码目录。</p><ul>${(p.sources||[]).map(s=>`<li>${s.kind==='active'?'未归档':'已归档'} · ${esc(s.time)} · ${esc(s.session_id)}</li>`).join('')||'<li>尚未从工作聊天整理。</li>'}</ul></details>`;}
+function knowledgeProject(p){
+  const chats=state.data.conversations;
+  return `<section class="knowledge-project" data-project-id="${esc(p.id||crypto.randomUUID())}">
+    <div class="knowledge-project-head"><h3>${esc(p.name||'新项目')}</h3><button type="button" class="button ghost" data-remove-project>移除</button></div>
+    <div class="knowledge-fields"><label>项目名称<input data-field="name" maxlength="100" required value="${esc(p.name)}" placeholder="例如：VehicleLogger"></label><label>代码与文档所在目录<input data-field="path" required value="${esc(p.path)}" placeholder="项目的本机绝对路径"></label></div>
+    <label>项目别名 / 关键词<input data-field="aliases" value="${esc((p.aliases||[]).join('，'))}" placeholder="例如：DTU，设备日志，采集器"></label>
+    <details class="knowledge-chats"><summary>用于回复哪些会话 · <span data-chat-count>${(p.chat_ids||[]).length}</span> 个</summary><p class="subtle">只在选中的会话中使用此项目的职责档案、代码和文档。不选会话时仅整理档案。</p><div class="knowledge-chat-tools"><input type="search" data-knowledge-chat-search placeholder="搜索联系人或群聊" aria-label="搜索此项目的适用会话"><button type="button" class="button ghost" data-select-chats="all">全选</button><button type="button" class="button ghost" data-select-chats="none">清空</button></div><div class="knowledge-chat-list">${chats.map(c=>`<label><input type="checkbox" data-knowledge-chat value="${esc(c.chat_id)}" ${(p.chat_ids||[]).includes(c.chat_id)?'checked':''}><span>${esc(c.name)}${c.kind==='group'?'（群聊）':''}</span></label>`).join('')||'<p class="subtle">暂无会话，建立联系后可在这里选择。</p>'}</div><p class="subtle" data-chat-empty hidden>没有匹配的会话</p></details>
+    <label>我的职责与工作背景<textarea data-field="profile" rows="6" maxlength="6000" placeholder="点击“一键了解工作内容”从相关工作聊天整理，也可以直接填写或修改。">${esc(p.profile)}</textarea></label>
+    ${knowledgeSources(p)}
+  </section>`;
+}
+
+async function loadKnowledge(container){
+  const data=await api('/api/knowledge');if(!container.isConnected)return;
+  container.innerHTML=`<div class="card-head"><div><h2>了解我的工作</h2><p class="subtle">从已归档和未归档的 Codex 聊天中筛选工作内容、整理职责，排除闲聊和生活话题。</p></div></div>
+    <div class="section-pad"><form id="knowledgeForm" class="form-grid"><details><summary>聊天来源目录（已归档与未归档）</summary><label>已归档聊天目录<input id="knowledgeArchive" required value="${esc(data.archive_dir)}" aria-label="已归档聊天目录"></label><label>未归档聊天目录<input id="knowledgeSessions" required value="${esc(data.sessions_dir)}" aria-label="未归档聊天目录"></label><p class="subtle">每个项目读取最近 30 条匹配聊天的近期问答，先筛选相关工作片段再整理，不包含工具输出或推理记录。</p></details>
+    <div class="knowledge-toolbar"><button type="button" class="button secondary" id="discoverWork">从聊天发现项目</button><button type="button" class="button ghost" id="addWorkProject">＋ 手动添加项目</button></div><div id="knowledgeCandidates"></div>
+    <div id="knowledgeProjects">${data.projects.map(knowledgeProject).join('')}</div>
+    <div class="knowledge-toolbar"><button class="button secondary" type="submit" id="saveKnowledge">保存资料与档案</button><button class="button primary" type="button" id="learnWork">✦ 一键了解工作内容</button><button class="button secondary" type="button" id="cancelLearnWork" hidden>取消整理</button></div>
+    <p id="knowledgeStatus" role="status" class="subtle"></p></form></div>`;
+  let revision=data.revision;
+  const status=container.querySelector('#knowledgeStatus');
+  const form=container.querySelector('#knowledgeForm');
+  const projects=container.querySelector('#knowledgeProjects');
+  const removedProjects=new Map();
+  const normalizePath=path=>{const value=String(path||'').trim().replaceAll('\\','/').replace(/\/+$/,'');return /^[a-z]:\//i.test(value)||value.startsWith('//')?value.toLowerCase():value;};
+  const sourcePath=row=>normalizePath(row.querySelector('[data-field="archive_path"]').value||row.querySelector('[data-field="path"]').value);
+  const projectRows=()=>[...projects.querySelectorAll('[data-project-id]')];
+  function syncCandidates(){
+    for(const button of container.querySelectorAll('[data-candidate-path]')){
+      const selected=projectRows().some(row=>sourcePath(row)===button.dataset.candidatePath);
+      button.setAttribute('aria-pressed',String(selected));button.classList.toggle('selected',selected);
+      button.textContent=(selected?'✓ 已选 · ':'＋ ')+button.dataset.candidateLabel;
+    }
+  }
+  function removeProject(row){removedProjects.set(sourcePath(row),row);row.remove();syncCandidates();status.textContent='项目已取消选择，保存后生效；也可以再次点击候选项目恢复。';}
+  function addProject(p){
+    if(projectRows().length>=12){toast('最多选择 12 个项目，请先取消不需要的项目');return;}
+    const key=normalizePath(p.archive_path||p.path);
+    if(key&&removedProjects.has(key)){projects.append(removedProjects.get(key));removedProjects.delete(key);}
+    else projects.insertAdjacentHTML('beforeend',knowledgeProject(p));
+    syncCandidates();
+    status.textContent='项目已选中，保存后生效。';
+  }
+  function updateChatCount(row){row.querySelector('[data-chat-count]').textContent=row.querySelectorAll('[data-knowledge-chat]:checked').length;}
+  const payload=()=>({revision,archive_dir:container.querySelector('#knowledgeArchive').value.trim(),sessions_dir:container.querySelector('#knowledgeSessions').value.trim(),projects:[...container.querySelectorAll('[data-project-id]')].map(el=>({
+    id:el.dataset.projectId,name:el.querySelector('[data-field="name"]').value.trim(),path:el.querySelector('[data-field="path"]').value.trim(),
+    aliases:el.querySelector('[data-field="aliases"]').value.split(/[,，、\n]/).map(s=>s.trim()).filter(Boolean),
+    chat_ids:[...el.querySelectorAll('[data-knowledge-chat]:checked')].map(c=>c.value),profile:el.querySelector('[data-field="profile"]').value,archive_path:el.querySelector('[data-field="archive_path"]').value.trim(),
+  }))});
+  async function save(){if(!form.reportValidity())throw Error('请填写项目名称和目录');const updated=await api('/api/knowledge',mutation('PUT',payload()));revision=updated.revision;for(const p of updated.projects){const row=[...container.querySelectorAll('[data-project-id]')].find(el=>el.dataset.projectId===p.id);if(row){row.querySelector('[data-field="profile"]').value=p.profile;row.querySelector('[data-field="path"]').value=p.path;row.querySelector('[data-field="archive_path"]').value=p.archive_path;}}return updated;}
+  form.addEventListener('submit',async e=>{e.preventDefault();try{await save();status.textContent='资料与职责档案已保存，下次回复生效。';toast('工作资料已保存');}catch(e){status.textContent=e.message;}});
+  container.onclick=e=>{
+    const remove=e.target.closest('[data-remove-project]');if(remove){removeProject(remove.closest('[data-project-id]'));return;}
+    const bulk=e.target.closest('[data-select-chats]');if(bulk){const row=bulk.closest('[data-project-id]');for(const check of row.querySelectorAll('[data-knowledge-chat]'))if(!check.closest('label').hidden)check.checked=bulk.dataset.selectChats==='all';updateChatCount(row);}
+  };
+  container.onchange=e=>{if(e.target.matches('[data-knowledge-chat]'))updateChatCount(e.target.closest('[data-project-id]'));if(e.target.matches('[data-field="path"],[data-field="archive_path"]'))syncCandidates();};
+  container.oninput=e=>{
+    if(!e.target.matches('[data-knowledge-chat-search]'))return;
+    const row=e.target.closest('[data-project-id]');const query=e.target.value.trim().toLowerCase();let visible=0;
+    for(const label of row.querySelectorAll('.knowledge-chat-list label')){label.hidden=!label.textContent.toLowerCase().includes(query);if(!label.hidden)visible++;}
+    row.querySelector('[data-chat-empty]').hidden=visible>0||!query;
+    row.querySelector('[data-select-chats="all"]').textContent=query?'全选结果':'全选';row.querySelector('[data-select-chats="none"]').textContent=query?'清空结果':'清空';
+  };
+  container.querySelector('#addWorkProject').onclick=()=>addProject({});
+  container.querySelector('#discoverWork').onclick=async e=>{
+    e.target.disabled=true;
+    try{
+      status.textContent='正在读取已归档与未归档的项目列表…';
+      const candidates=await api('/api/knowledge/discover',mutation('POST',{archive_dir:container.querySelector('#knowledgeArchive').value.trim(),sessions_dir:container.querySelector('#knowledgeSessions').value.trim()}));
+      const area=container.querySelector('#knowledgeCandidates');
+      area.innerHTML=candidates.length?'<p class="subtle">点击选择项目，再次点击取消；整理时会进一步筛选工作内容。修改选择后请保存。</p>':'<p class="subtle">没有发现可读的聊天，可以手动添加项目。</p>';
+      for(const p of candidates){const b=document.createElement('button');b.type='button';b.className='knowledge-candidate';b.dataset.candidatePath=normalizePath(p.path);b.dataset.candidateLabel=`${p.name} · ${p.count} 条聊天（已归档 ${p.archived_count} / 未归档 ${p.active_count}）${p.exists?'':' · 目录当前不可用'}`;b.title=p.path;
+        b.onclick=()=>{const row=projectRows().find(el=>sourcePath(el)===b.dataset.candidatePath);if(row)removeProject(row);else addProject(p);};area.append(b);}
+      syncCandidates();
+      status.textContent=`发现 ${candidates.length} 个候选项目，添加后可选择适用会话。`;
+    }catch(error){status.textContent=error.message;}finally{e.target.disabled=false;}
+  };
+  async function watch(id){
+    const button=container.querySelector('#learnWork');
+    button.disabled=true;form.querySelectorAll('input,textarea,button').forEach(el=>el.disabled=true);
+    const cancel=container.querySelector('#cancelLearnWork');cancel.hidden=false;cancel.disabled=false;
+    cancel.onclick=async()=>{cancel.disabled=true;cancel.textContent='正在取消…';try{await api(`/api/knowledge/learn/${encodeURIComponent(id)}/cancel`,mutation('POST',{}));}catch(e){status.textContent='取消未成功：'+e.message;cancel.disabled=false;cancel.textContent='取消整理';}};
+    let shownSaved=0;
+    const showProgress=async job=>{
+      if(!container.isConnected)throw Error('已离开设置页');
+      const p=job.result?.progress;
+      const started=new Date(job.created_at).getTime();const seconds=Math.max(0,Math.floor((Date.now()-started)/1000));
+      const elapsed=seconds>=60?`${Math.floor(seconds/60)} 分 ${seconds%60} 秒`:`${seconds} 秒`;
+      const parts=[`已运行 ${elapsed}`];
+      if(p?.project_index)parts.push(`项目 ${p.project_index}/${p.project_total}：${p.project_name}`);
+      if(p?.batch_total&&p.batch)parts.push(`批次 ${p.batch}/${p.batch_total}`);
+      if(p)parts.push(`已保存 ${p.completed_projects||0} 个项目`);
+      status.textContent=parts.join(' · ')+'\n'+(p?.message||'正在整理，旧版后台暂不提供批次进度')+'\n可以离开此页面，后台会继续处理；已完成项目会立即保存。';
+      if((p?.completed_projects||0)>shownSaved){
+        const latest=await api('/api/knowledge');if(!container.isConnected)throw Error('已离开设置页');
+        for(const project of latest.projects){const row=projectRows().find(el=>el.dataset.projectId===project.id);if(!row)continue;row.querySelector('[data-field="profile"]').value=project.profile;const previous=row.querySelector('.knowledge-sources');const open=previous.open;previous.outerHTML=knowledgeSources(project);row.querySelector('.knowledge-sources').open=open;row.querySelectorAll('input,textarea,button').forEach(el=>el.disabled=true);}
+        shownSaved=p.completed_projects;
+      }
+    };
+    status.textContent='正在读取整理进度…';
+    try{const result=await waitJob(id,showProgress);if(!container.isConnected)return;toast(result.answer);await loadKnowledge(container);}
+    catch(e){if(container.isConnected){try{await loadKnowledge(container);}catch{status.textContent='整理状态读取失败：'+e.message;form.querySelectorAll('input,textarea,button').forEach(el=>el.disabled=false);cancel.hidden=true;syncCandidates();}}}
+  }
+  container.querySelector('#learnWork').onclick=async()=>{
+    try{await save();const job=await api('/api/knowledge/learn',mutation('POST',{}));await watch(job.job_id);}catch(e){status.textContent=e.message;}
+  };
+  if(data.job&&['queued','running'].includes(data.job.status))watch(data.job.id);
+  else if(data.job?.status==='failed')status.textContent='上次整理未完成：'+data.job.error;
+  else if(data.job?.status==='done')status.textContent=JSON.parse(data.job.result||'{}').answer||'上次整理已完成。';
+  else if(!data.projects.length)status.textContent='先从聊天发现项目，或手动填写项目目录。';
 }
 function showTask(id){
   const t=state.data.tasks.find(t=>t.id===Number(id));if(!t)return;
   state.task=t;$('#taskTitle').textContent=t.title;$('#taskDetail').textContent=`${chatName(t.chat_id)} · ${statusNames[t.status]}${t.due_at?' · '+t.due_at:''}\n\n${t.details||'暂无补充说明'}`;$('#taskReply').value=t.draft_reply||'';$('#taskStatus').value=t.status;$('#taskPriority').value=t.priority;$('#taskPolishInstruction').value='';$('#taskPolishHint').textContent='';$('#taskSuffixPreview').textContent=state.data.status.reply_suffix?'发送时附加尾缀：'+state.data.status.reply_suffix:'当前未设置回复尾缀';$('#taskDialog').showModal();
 }
 async function waitJob(id,onUpdate){
-  while(true){const j=await api(`/api/jobs/${id}`);if(j.status==='done')return j.result;if(j.status==='failed')throw Error(j.error);if(onUpdate)onUpdate(j);await new Promise(r=>setTimeout(r,1500));}
+  while(true){const j=await api(`/api/jobs/${id}`);if(j.status==='done')return j.result;if(j.status==='failed')throw Error(j.error);if(onUpdate)await onUpdate(j);await new Promise(r=>setTimeout(r,1500));}
 }
 function addBubble(text, kind='assistant'){let el=document.createElement('div');el.className=kind+'-bubble';el.textContent=text;$('#controlThread').append(el);$('#controlThread').scrollTop=$('#controlThread').scrollHeight;return el;}
 function setAssistantOpen(open){

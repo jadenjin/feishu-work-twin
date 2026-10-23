@@ -11,6 +11,7 @@ from ..storage import Storage
 from ..config import DATA_DIR
 from .store import HubStore, DEFAULT_RULES, DEFAULT_SUFFIX
 from .engine import WorkEngine
+from .knowledge import WorkKnowledge
 
 
 class HubRuntime:
@@ -25,6 +26,7 @@ class HubRuntime:
                 "网页工作台需要支持结构化输出的 AI 后端，请配置 codex 或 compatible"
             )
         self.model_slots = asyncio.Semaphore(2)
+        self.knowledge = WorkKnowledge(self)
         self.engine = WorkEngine(self)
         self.client = None
         self.dispatcher = None
@@ -32,6 +34,7 @@ class HubRuntime:
         self.connection_error = ""
         self.last_analysis = ""
         self.tasks = set()
+        self.jobs = {}
         self.observations = {}
 
     async def generate(self, session, prompt, **kwargs):
@@ -398,14 +401,40 @@ class HubRuntime:
     def submit_job(self, kind, text, chat_id=""):
         job_id = str(uuid.uuid4())
         self.hub.new_job(job_id, kind, text)
-        self.spawn(self.run_job(job_id, kind, text, chat_id))
+        task = self.spawn(self.run_job(job_id, kind, text, chat_id))
+        self.jobs[job_id] = task
+        task.add_done_callback(lambda _: self.jobs.pop(job_id, None))
         return job_id
+
+    async def cancel_learning(self, job_id):
+        job = self.hub.job(job_id)
+        if not job or job["kind"] != "learn_work":
+            raise ValueError("工作整理任务不存在")
+        if job["status"] not in ("queued", "running"):
+            return job
+        task = self.jobs.get(job_id)
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        job = self.hub.job(job_id)
+        if job["status"] in ("queued", "running"):
+            self.hub.update_job(
+                job_id, "failed", error="整理已取消，已保存的项目档案保留"
+            )
+        return self.hub.job(job_id)
 
     async def run_job(self, job_id, kind, text, chat_id):
         self.hub.update_job(job_id, "running")
         try:
             if kind == "control":
                 result = await self.engine.control(text, job_id)
+            elif kind == "learn_work":
+                result = await self.knowledge.learn(
+                    json.loads(text),
+                    progress=lambda value: self.hub.update_job(
+                        job_id, "running", result={"progress": value}
+                    ),
+                )
             elif kind == "task_draft":
                 payload = json.loads(text)
                 task = next(
@@ -450,6 +479,11 @@ class HubRuntime:
             else:
                 raise ValueError("任务类型无效")
             self.hub.update_job(job_id, "done", result=result)
+        except asyncio.CancelledError:
+            self.hub.update_job(
+                job_id, "failed", error="任务已中断或取消，已保存的项目档案保留"
+            )
+            raise
         except Exception as e:
             self.hub.update_job(job_id, "failed", error=str(e))
 

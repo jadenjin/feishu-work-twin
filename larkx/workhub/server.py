@@ -466,6 +466,44 @@ def create_app(runtime=None, start_bridge=True):
             r.hub.configure_human_pause(fields["human_pause_seconds"])
         return r.status()
 
+    @app.get("/api/knowledge")
+    async def knowledge(request: Request):
+        r = hub(request)
+        return {
+            **r.knowledge.state(),
+            "job": r.hub.job(r.hub.setting("work_knowledge_job")) or None,
+        }
+
+    @app.put("/api/knowledge")
+    async def knowledge_save(request: Request):
+        return hub(request).knowledge.save(await request.json())
+
+    @app.get("/api/knowledge/discover")
+    async def knowledge_discover(request: Request):
+        return await asyncio.to_thread(hub(request).knowledge.discover)
+
+    @app.post("/api/knowledge/discover")
+    async def knowledge_discover_sources(request: Request):
+        sources = await request.json()
+        return await asyncio.to_thread(hub(request).knowledge.discover, sources)
+
+    @app.post("/api/knowledge/learn")
+    async def knowledge_learn(request: Request):
+        r = hub(request)
+        previous = r.hub.job(r.hub.setting("work_knowledge_job"))
+        if previous and previous["status"] in ("queued", "running"):
+            return {"job_id": previous["id"]}
+        snapshot = r.knowledge.state()
+        if not snapshot["projects"]:
+            raise ValueError("请先添加需要了解的项目")
+        job_id = r.submit_job("learn_work", json.dumps(snapshot, ensure_ascii=False))
+        r.hub.set_setting("work_knowledge_job", job_id)
+        return {"job_id": job_id}
+
+    @app.post("/api/knowledge/learn/{job_id}/cancel")
+    async def knowledge_cancel(job_id: str, request: Request):
+        return await hub(request).cancel_learning(job_id)
+
     @app.post("/api/control")
     async def control(body: ControlBody, request: Request):
         return {"job_id": hub(request).submit_job("control", body.text)}

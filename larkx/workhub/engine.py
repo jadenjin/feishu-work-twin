@@ -129,6 +129,23 @@ class WorkEngine:
                 for member in msg.get("_batch") or [msg]
             )
         )
+        knowledge_revision = store.setting("work_knowledge")
+        knowledge_context = ""
+        knowledge_failed = False
+        if send_reply:
+            try:
+                knowledge_context = await self.runtime.knowledge.reply_context(
+                    chat_id, body, ctx
+                )
+            except Exception:
+                knowledge_failed = True
+                knowledge_context = "\n本次项目资料检索失败。不能声称已查代码；需要技术依据时说明待核实。"
+        if knowledge_context:
+            knowledge_context += (
+                "\n返回 knowledge_supported 布尔值：现有资料足以支持本次回复时为 true；"
+                "需要技术依据但未找到、项目不明确或依据矛盾时为 false，此时只生成待审核草稿。"
+                "寒暄或一般沟通无需代码证据，可以为 true。"
+            )
         prompt = analysis_prompt(
             store.setting("own_rules", DEFAULT_RULES),
             ctx,
@@ -136,9 +153,13 @@ class WorkEngine:
             casual_group=msg.get("chat_type") in (2, 3)
             and store.group_reply_policy(chat_id) == "all",
             required_reply=required_reply,
+            knowledge_context=knowledge_context,
         )
         allowed_task_ids = [task["id"] for task in ctx["tasks"]]
         schema = deepcopy(WORK_SCHEMA)
+        if knowledge_context:
+            schema["properties"]["knowledge_supported"] = {"type": "boolean"}
+            schema["required"].append("knowledge_supported")
         schema["properties"]["attention_task_id"]["enum"] = [0] + allowed_task_ids
         schema["properties"]["tasks"]["items"]["properties"]["task_id"]["enum"] = [
             0
@@ -218,6 +239,18 @@ class WorkEngine:
             latest_ctx.get("sender", {}).get("mode", "auto"),
         }
         mode = "off" if "off" in modes else "draft" if "draft" in modes else "auto"
+        # Revoking project access also cancels an already-generating automatic send.
+        if mode != "off" and (
+            knowledge_failed
+            or (
+                knowledge_context
+                and (
+                    result.get("knowledge_supported") is not True
+                    or knowledge_revision != store.setting("work_knowledge")
+                )
+            )
+        ):
+            mode = "draft"
         paused = store.setting("automation_enabled", "true") != "true"
         latest_handoff = store.handoff(chat_id)
         human_paused = (
@@ -377,12 +410,20 @@ class WorkEngine:
     async def polish_reply(self, chat_id, text, instruction="", task=None):
         store = self.runtime.hub
         ctx = store.context(chat_id) if chat_id else {}
+        knowledge_context = (
+            await self.runtime.knowledge.reply_context(
+                chat_id, text + "\n" + instruction, ctx
+            )
+            if chat_id
+            else ""
+        )
         prompt = polish_prompt(
             store.setting("own_rules", DEFAULT_RULES),
             ctx,
             text,
             instruction,
             task=task,
+            knowledge_context=knowledge_context,
         )
         async with self.runtime.model_slots:
             session = (
