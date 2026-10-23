@@ -97,7 +97,7 @@ class ClaudeCodeBackend(AgentBackend):
 class NullBackend(AgentBackend):
     name = 'none'
 
-    async def run(self, session_key: str, prompt: str) -> str:
+    async def run(self, session_key: str, prompt: str, **kwargs) -> str:
         return ''
 
 
