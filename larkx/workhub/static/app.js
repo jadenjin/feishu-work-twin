@@ -1,15 +1,10 @@
+import {api, mutation, startPolling} from './client.js?v=1';
+
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const state = {view:'home',filter:'unfinished',data:null,chat:null,task:null,chatDrafts:{},chatPolishing:new Set(),conversationQuery:'',rendered:false};
 const viewNames = {home:'工作台',conversations:'会话与记忆',personas:'角色档案',activity:'执行记录',settings:'数字人设置'};
 const statusNames = {open:'待处理',in_progress:'进行中',done:'已完成',needs_attention:'需要你决定',pending:'处理中',sent:'已发送',failed:'失败',uncertain:'待核对',auto:'自动回复',draft:'先留草稿',off:'不自动回复'};
-async function api(path, options={}) {
-  const r = await fetch(path,{...options,headers:{'Content-Type':'application/json','X-Workhub':'1',...options.headers}});
-  const data = await r.json();
-  if(!r.ok) throw Error(typeof data.detail==='string'?data.detail:'操作失败，请检查输入');
-  return data;
-}
-const mutation = (method, data) => ({method,body:JSON.stringify(data)});
 let toastTimer;
 function toast(text){clearTimeout(toastTimer);$('#toast').textContent=text;$('#toast').classList.add('show');toastTimer=setTimeout(()=>$('#toast').classList.remove('show'),4500);}
 function timeLabel(ts){if(!ts)return '';return new Date(typeof ts==='string'&&ts.includes('T')?ts:Number(ts)*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
@@ -287,6 +282,8 @@ $('#taskPolish').addEventListener('click',async()=>{
 $('#taskReplyForm').addEventListener('submit',async e=>{e.preventDefault();let b=e.submitter;b.disabled=true;try{const r=await api(`/api/tasks/${state.task.id}/reply`,mutation('POST',{content:$('#taskReply').value,request_id:crypto.randomUUID()}));toast(statusNames[r.status]||r.status);if(r.status==='sent')$('#taskDialog').close();await loadState();}catch(e){toast(e.message);}finally{b.disabled=false;}});
 $('#newTaskForm').addEventListener('submit',async e=>{e.preventDefault();try{await api('/api/tasks',mutation('POST',{title:$('#newTaskTitle').value,details:$('#newTaskDetails').value,chat_id:$('#newTaskChat').value,priority:'normal'}));$('#newTaskDialog').close();e.target.reset();await loadState();toast('待办已添加');}catch(e){toast(e.message);}});
 $('#date').textContent=new Date().toLocaleDateString('zh-CN',{month:'long',day:'numeric',weekday:'long'});
-loadState().catch(e=>toast('连接工作台失败：'+e.message));
 api('/api/control/history').then(jobs=>{for(const j of jobs){addBubble(j.input,'user');if(j.status==='done'){const r=JSON.parse(j.result);const summary=(r.actions||[]).map(a=>`${a.type}：${a.ok?(statusNames[a.data?.status]||'已完成'):a.error}`).join('\n');addBubble((r.answer||'已处理')+(summary?'\n\n'+summary:''));}else if(j.status==='failed')addBubble('处理未完成：'+j.error);else addBubble('这条指令正在后台处理，可稍后刷新查看结果。');}}).catch(()=>{});
-setInterval(()=>loadState(state.view==='home'||state.view==='activity').then(()=>refreshChatMessages()).catch(()=>{}),5000);
+startPolling(async()=>{
+  await loadState();
+  await refreshChatMessages();
+},{enabled:()=>!document.hidden,onError:updateNotice});
