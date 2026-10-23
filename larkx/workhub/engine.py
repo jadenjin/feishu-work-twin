@@ -415,8 +415,19 @@ class WorkEngine:
         if len(actions) > 100:
             raise ValueError("一次指令最多执行 100 个动作，请分批安排")
         results = []
+        failed_step = None
         for index, action in enumerate(actions):
             kind = action.get("type") if isinstance(action, dict) else "invalid"
+            if failed_step is not None:
+                results.append(
+                    {
+                        "type": kind,
+                        "ok": False,
+                        "skipped": True,
+                        "error": f"第 {failed_step} 步未成功，后续动作未执行；请先核对已执行结果",
+                    }
+                )
+                continue
             try:
                 if kind not in allowed:
                     raise ValueError(
@@ -482,6 +493,10 @@ class WorkEngine:
                 results.append(item)
             except Exception as error:
                 results.append({"type": kind, "ok": False, "error": str(error)})
+            if not results[-1]["ok"]:
+                # A later step may depend on an earlier send. Do not complete
+                # work after a failed or uncertain action, or retry sent steps.
+                failed_step = index + 1
         return {
             "answer": plan.get("answer", ""),
             "actions": results,
