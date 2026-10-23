@@ -17,7 +17,10 @@ def _ts(msg: dict) -> str:
     if not t:
         return ""
     try:
-        return datetime.fromtimestamp(int(t)).strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = float(t)
+        if timestamp > 100000000000:
+            timestamp /= 1000
+        return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return str(t)
 

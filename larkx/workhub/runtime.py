@@ -127,10 +127,36 @@ class HubRuntime:
                 }
             )
 
-    async def analyze_messages(self, batch):
+    async def analyze_messages(self, batch, *, overview_only=False):
         from ..agent.dispatcher import build_xml_message
         from ..media import prepare_image, image_messages
 
+        # An overview may span multiple topics. Never attribute all of them to
+        # the final message's thread or sender.
+        groups = {}
+        for message in batch:
+            key = (str(message["chat_id"]), message.get("anchor") or "")
+            groups.setdefault(key, []).append(message)
+        if not groups:
+            return {"analyses": []}
+        batches = [
+            (key, messages[start : start + 20])
+            for key, messages in groups.items()
+            for start in range(0, len(messages), 20)
+        ]
+        if len(batches) > 1:
+            return {
+                "analyses": [
+                    {
+                        "chat_id": key[0],
+                        "anchor": key[1],
+                        "result": await self.analyze_messages(
+                            messages, overview_only=overview_only
+                        ),
+                    }
+                    for key, messages in batches
+                ]
+            }
         images = []
         for msg in batch[-6:]:
             if msg.get("msg_type") in (2, 5) and self.client:
@@ -154,6 +180,7 @@ class HubRuntime:
             images,
             None,
             send_reply=False,
+            overview_only=overview_only,
         )
 
     async def send(
@@ -464,6 +491,7 @@ class HubRuntime:
                         "chat_type_name": "GROUP" if r.chat_type in (2, 3) else "P2P",
                         "anchor": r.anchor,
                         "content": r.content,
+                        "create_time": r.create_time,
                         "msg_type": r.msg_type,
                         "content_data": json.loads(r.content_data)
                         if r.content_data
@@ -473,7 +501,7 @@ class HubRuntime:
                     }
                     for r in rows
                 ]
-                result = await self.analyze_messages(batch)
+                result = await self.analyze_messages(batch, overview_only=True)
             else:
                 raise ValueError("任务类型无效")
             self.hub.update_job(job_id, "done", result=result)

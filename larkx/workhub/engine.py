@@ -72,14 +72,40 @@ class WorkEngine:
         self.runtime = runtime
         self.analysis_locks = defaultdict(asyncio.Lock)
 
-    async def process(self, session_key, msg, body, images, reply_fn, send_reply=True):
+    async def process(
+        self,
+        session_key,
+        msg,
+        body,
+        images,
+        reply_fn,
+        send_reply=True,
+        *,
+        overview_only=False,
+    ):
         # Reply and observation paths must see the previous analysis' committed tasks.
         async with self.analysis_locks[str(msg["chat_id"])]:
             return await self._process(
-                session_key, msg, body, images, reply_fn, send_reply
+                session_key,
+                msg,
+                body,
+                images,
+                reply_fn,
+                send_reply and not overview_only,
+                overview_only=overview_only,
             )
 
-    async def _process(self, session_key, msg, body, images, reply_fn, send_reply=True):
+    async def _process(
+        self,
+        session_key,
+        msg,
+        body,
+        images,
+        reply_fn,
+        send_reply=True,
+        *,
+        overview_only=False,
+    ):
         store = self.runtime.hub
         chat_id = str(msg["chat_id"])
         handoff = store.handoff(chat_id)
@@ -88,6 +114,7 @@ class WorkEngine:
             str(msg["chat_id"]),
             str(msg.get("from_id") or ""),
             anchor=msg.get("anchor") or "",
+            through_msg_id=str(msg.get("msg_id") or ""),
         )
         if msg.get("chat_type") in (2, 3):
             names = {
@@ -114,7 +141,9 @@ class WorkEngine:
         paused = store.setting("automation_enabled", "true") != "true"
         my_id = str(getattr(getattr(self.runtime.client, "auth", None), "user_id", ""))
         ctx["self_user_id"] = my_id
-        ctx["analysis_mode"] = "reply" if send_reply else "observe"
+        ctx["analysis_mode"] = (
+            "overview" if overview_only else "reply" if send_reply else "observe"
+        )
         required_reply = bool(
             send_reply
             and msg.get("chat_type") in (2, 3)
@@ -144,7 +173,7 @@ class WorkEngine:
             knowledge_context += (
                 "\n返回 knowledge_supported 布尔值：现有资料足以支持本次回复时为 true；"
                 "需要技术依据但未找到、项目不明确或依据矛盾时为 false，此时只生成待审核草稿。"
-                "寒暄或一般沟通无需代码证据，可以为 true。"
+                "寒暄、一般沟通或仅向对方澄清缺少的信息且不包含技术结论时，无需代码证据，可以为 true。"
             )
         prompt = analysis_prompt(
             store.setting("own_rules", DEFAULT_RULES),
@@ -157,6 +186,11 @@ class WorkEngine:
         )
         allowed_task_ids = [task["id"] for task in ctx["tasks"]]
         schema = deepcopy(WORK_SCHEMA)
+        if overview_only:
+            schema["properties"]["tasks"]["maxItems"] = 0
+            schema["properties"]["facts"]["maxItems"] = 0
+            schema["properties"]["needs_attention"]["enum"] = [False]
+            schema["properties"]["should_reply"]["enum"] = [False]
         if knowledge_context:
             schema["properties"]["knowledge_supported"] = {"type": "boolean"}
             schema["required"].append("knowledge_supported")
@@ -193,7 +227,8 @@ class WorkEngine:
             # Own clarifications without a new task cannot create a missing-info alert.
             result["needs_attention"] = False
         if (
-            ctx["overview"]
+            not overview_only
+            and ctx["overview"]
             and not result.get("facts")
             and not result.get("tasks")
             and not result.get("needs_attention")
@@ -224,6 +259,16 @@ class WorkEngine:
                     raise ValueError("AI 选择的引用/@对象不在当前对话中")
                 if value:
                     targets[key] = value
+        if overview_only:
+            # A manual summary refresh must not resurrect completed work or
+            # create tasks/memories from a different grouping of historical IDs.
+            result.update(
+                tasks=[], facts=[], needs_attention=False, attention_task_id=0,
+                attention_reason="",
+            )
+            store.update_overview(chat_id, result.get("overview") or "")
+            self.runtime.last_analysis = chat_id
+            return result
         store.apply_analysis(msg, result, allowed_task_ids=allowed_task_ids)
         # Owner can pause or switch to draft while a model call is in progress.
         for member in msg.get("_batch") or [msg]:
@@ -406,7 +451,11 @@ class WorkEngine:
 
     async def polish_reply(self, chat_id, text, instruction="", task=None):
         store = self.runtime.hub
-        ctx = store.context(chat_id) if chat_id else {}
+        ctx = (
+            store.context(chat_id, anchor=task["anchor"] if task else None)
+            if chat_id
+            else {}
+        )
         knowledge_context = (
             await self.runtime.knowledge.reply_context(
                 chat_id, text + "\n" + instruction, ctx

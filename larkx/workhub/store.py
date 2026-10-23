@@ -302,7 +302,7 @@ class HubStore:
                 result.append(data)
             return result
 
-    def context(self, chat_id, sender_id="", anchor=None):
+    def context(self, chat_id, sender_id="", anchor=None, through_msg_id=""):
         with self.storage.Session() as s:
             c = s.get(Conversation, str(chat_id))
             p = s.get(Persona, c.persona_key) if c else None
@@ -325,6 +325,14 @@ class HubStore:
             recent_query = s.query(Message).filter_by(chat_id=str(chat_id))
             if anchor is not None:
                 recent_query = recent_query.filter_by(anchor=anchor)
+            if through_msg_id:
+                current = (
+                    s.query(Message)
+                    .filter_by(chat_id=str(chat_id), msg_id=str(through_msg_id))
+                    .first()
+                )
+                if current:
+                    recent_query = recent_query.filter(Message.id <= current.id)
             recent = recent_query.order_by(desc(Message.id)).limit(24).all()
             return {
                 "overview": c.overview if c else "",
@@ -478,6 +486,15 @@ class HubStore:
             if r:
                 s.delete(r)
                 s.commit()
+
+    def update_overview(self, chat_id, overview):
+        if not isinstance(overview, str):
+            raise ValueError("会话概览必须是文字")
+        with self.storage.Session() as session:
+            row = session.get(Conversation, str(chat_id))
+            if row and overview.strip():
+                row.overview = overview[:6000]
+                session.commit()
 
     def apply_analysis(self, msg, analysis, allowed_task_ids=None):
         chat_id = str(msg["chat_id"])

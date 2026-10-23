@@ -60,6 +60,8 @@ def analysis_prompt(
         "本人补充的解释、材料和附件不能写成对方提供，也不能当作对方的新请求。"
         "analysis_mode=observe 表示仅整理记录，should_reply=false、reply 为空；可追加已有任务进展，"
         "本人已在回答时，不能因为不知道回答原因而新建异常任务。\n"
+        "analysis_mode=overview 表示本人仅刷新会话概览，只更新 overview；"
+        "tasks=[]、facts=[]、needs_attention=false、attention_task_id=0，不补建历史待办或记忆。\n"
         "【群聊指向】\n"
         "只有当前话题里确实在对我说话或需要我参与才回应；群聊触发条件通过不等于每个群成员的问题都需要我回答。"
         "针对具体消息时 reply_to_message_id 用准确 msg_id；确需提醒或定向回应时 mention_user_id 用准确 sender_id。"
