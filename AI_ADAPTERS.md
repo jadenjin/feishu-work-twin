@@ -27,7 +27,7 @@ LARKX_AI_CACHE_KEY=false
 | --- | --- |
 | `larkx/agent/contracts.py` | 请求、结果、能力和 token 用量结构 |
 | `larkx/agent/context.py` | 历史文件、有限内存缓存、过期、输入估算与历史选择 |
-| `larkx/agent/model_backend.py` | 会话串行、请求组装、预算、重置并发保护、统计 |
+| `larkx/agent/model_backend.py` | 会话串行、请求组装、预算、结构化结果校验、重置并发保护、统计 |
 | `larkx/agent/codex_backend.py` | Codex CLI 调用、沙箱、超时与错误处理 |
 | `larkx/agent/compatible_backend.py` | HTTP 连接池、接口映射、响应校验和用量解析 |
 | `larkx/workhub/ai_context.py` | 去掉已在消息正文出现的重复历史记录 |
@@ -52,7 +52,7 @@ class MyBackend(ModelBackend):
 
     async def generate(self, request):
         # 将 request.system、messages、response_schema 映射到供应商 SDK。
-        # 如声明支持结构化输出，必须保证/验证输出满足 response_schema。
+        # 将 response_schema 传给供应商；公共 run 会在持久化和返回前校验结果。
         # 将 request.max_output_tokens 用作输出上限。
         # 如果供应商支持缓存提示，使用 request.cache_key；它不是授权凭据。
         result = await your_sdk_generate(request)
@@ -96,6 +96,8 @@ LARKX_AI_CONTEXT_TTL=86400
 输入预算包括规则、当前请求和 Schema 的估算消耗，并给图片预留空间；只从剩余预算取最近历史，不截断当前指令。当前请求自身超预算会明确报错。估算使用 UTF-8 字节数，不是特定模型的精确 tokenizer，也不是计费数字；图片实际消耗依模型和分辨率变化。HTTP 输出受配置上限控制；Codex CLI 输出上限由 CLI/模型控制，本配置不虚构 CLI 支持的参数。
 
 普通聊天默认 `history_mode="conversation"`，复用有限历史；结构化工作请求默认 `history_mode="snapshot"`，因为业务层已提供当前概览、记忆和任务，不再回放旧快照或旧图片。SDK 接入可明确指定模式。历史默认最多保留 20 条消息，过期后不再用于生成；过期不等于磁盘文件已删除。
+
+快照模式不读取旧历史文件，损坏的旧快照不会阻塞当前完整上下文请求；普通对话仍会报告历史损坏。当前请求明确附带的图片文件缺失时会停止调用，避免悄悄按纯文字生成；已失效的历史图片不会阻止新的纯文字对话。所有 `ModelBackend.run` 调用统一检查输出 Schema 配置，并在保存历史、返回业务层前验证结构化结果，校验失败不会触发业务动作。
 
 本地内存缓存最多 128 个会话，减少文件读取，本身不减少模型计费 token。实际节省来自删除正文与上下文里的重复消息、限制历史和不重复回放快照。分析规则移到动态资料前，当前时间移到请求末尾，为前缀复用创造条件；规则、模型、Schema 或前缀变化仍可能导致缓存失效。
 

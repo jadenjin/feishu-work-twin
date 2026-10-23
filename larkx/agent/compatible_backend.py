@@ -3,13 +3,11 @@
 import asyncio
 import base64
 import mimetypes
-import json
 import os
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
-from jsonschema import Draft202012Validator, ValidationError, SchemaError
 
 from ..config import DATA_DIR
 from .contracts import Capabilities, GenerationResult, TokenUsage, scoped_key
@@ -137,8 +135,6 @@ class CompatibleBackend(ModelBackend):
             text = message["content"]
             if not isinstance(text, str) or not text.strip():
                 raise ValueError("empty output")
-            if request.response_schema:
-                Draft202012Validator(request.response_schema).validate(json.loads(text))
             usage = data.get("usage") or {}
             details = usage.get("prompt_tokens_details") or {}
 
@@ -159,8 +155,6 @@ class CompatibleBackend(ModelBackend):
             IndexError,
             TypeError,
             AttributeError,
-            ValidationError,
-            SchemaError,
         ):
             raise RuntimeError(
                 "AI 返回空内容、截断内容或无效响应，未执行任何操作"

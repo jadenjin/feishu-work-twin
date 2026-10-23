@@ -1,10 +1,12 @@
 """Shared lifecycle for text-generation adapters (CLI, HTTP, or SDK)."""
 
+import json
 import os
 from pathlib import Path
 import time
 
 from loguru import logger
+from jsonschema import Draft202012Validator, SchemaError, ValidationError
 
 from .backend import AgentBackend
 from .context import ConversationStore, estimate_tokens, select_history
@@ -71,20 +73,30 @@ class ModelBackend(AgentBackend):
     ):
         if response_schema and not self.capabilities.structured_output:
             raise ValueError("当前 AI 适配器不支持结构化输出")
+        validator = None
+        if response_schema:
+            try:
+                Draft202012Validator.check_schema(response_schema)
+                validator = Draft202012Validator(response_schema)
+            except SchemaError:
+                raise ValueError("AI 输出格式配置无效，未调用模型") from None
         mode = history_mode or ("snapshot" if response_schema else "conversation")
         if mode not in ("snapshot", "conversation"):
             raise ValueError("history_mode 必须为 snapshot 或 conversation")
         state = self.store.state(session_key)
         async with state.lock:
             revision = state.revision
-            history = self.store.load(session_key)
+            history = self.store.load(session_key) if mode == "conversation" else []
+            current_images = tuple(map(str, image_paths))
+            if any(not Path(path).is_file() for path in current_images):
+                raise ValueError("本次图片文件已不可用，请重新加载图片后再试")
             images = []
             # A snapshot supplies its own images; old attachments must not leak
             # into a new analysis or survive a text-only control request.
             if mode == "conversation":
                 for item in history[-6:]:
                     images.extend(item.get("images", []))
-            images.extend(map(str, image_paths))
+            images.extend(current_images)
             images = tuple(dict.fromkeys(p for p in images if Path(p).is_file()))[-3:]
             if images and not self.capabilities.images:
                 raise ValueError("当前 AI 适配器未启用图片能力，请选择支持图片的模型")
@@ -142,7 +154,14 @@ class ModelBackend(AgentBackend):
             result = await self.generate(request)
             if state.revision != revision:
                 raise RuntimeError("会话已清除，本次旧回复已取消")
+            if not isinstance(result.text, str):
+                raise RuntimeError("AI 返回了无效内容，未执行任何操作")
             reply = result.text.strip()
+            if validator is not None:
+                try:
+                    validator.validate(json.loads(reply))
+                except (ValueError, ValidationError):
+                    raise RuntimeError("AI 返回的内容不符合输出格式，未执行任何操作") from None
             if (
                 not response_schema
                 and require_reply
@@ -159,7 +178,7 @@ class ModelBackend(AgentBackend):
                     # Preserve exactly what the provider saw, including the
                     # timestamp, so later turns can match the earlier prefix.
                     "content": current["content"],
-                    "images": list(map(str, image_paths)),
+                    "images": list(current_images),
                 }
             )
             if reply and reply != "[[NO_REPLY]]":
