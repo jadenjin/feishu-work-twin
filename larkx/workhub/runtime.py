@@ -12,6 +12,7 @@ from ..config import DATA_DIR
 from .store import HubStore, DEFAULT_RULES, DEFAULT_SUFFIX
 from .engine import WorkEngine
 from .knowledge import WorkKnowledge
+from .work_context import WorkContext
 
 
 class HubRuntime:
@@ -27,6 +28,7 @@ class HubRuntime:
             )
         self.model_slots = asyncio.Semaphore(2)
         self.knowledge = WorkKnowledge(self)
+        self.work_context = WorkContext(self)
         self.engine = WorkEngine(self)
         self.client = None
         self.dispatcher = None

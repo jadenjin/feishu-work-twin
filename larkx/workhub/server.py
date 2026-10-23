@@ -131,6 +131,14 @@ def create_app(runtime=None, start_bridge=True):
             "task_counts": r.hub.task_counts(),
         }
 
+    @app.get("/api/integration/work-context")
+    async def work_context(
+        query: str = Query(default="", max_length=2000),
+        project_id: str = Query(default="", max_length=64),
+        chat_id: str = Query(default="", max_length=40),
+    ):
+        return await access.work_context(query, project_id, chat_id)
+
     @app.get("/api/tasks/page")
     async def tasks_page(
         request: Request,

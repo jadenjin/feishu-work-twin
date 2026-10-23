@@ -3,8 +3,9 @@ import json
 from collections import defaultdict
 from copy import deepcopy
 from .store import DEFAULT_RULES
-from .ai_context import without_repeated_messages
+from .ai_context import without_repeated_messages, owner_query_history
 from .control_policy import allowed_control_actions
+from .work_context import project_catalog
 from .prompts import analysis_prompt, control_prompt, polish_prompt
 
 
@@ -137,8 +138,18 @@ class WorkEngine:
                 getattr(getattr(self.runtime.client, "auth", None), "user_id", "")
             )
         ctx = without_repeated_messages(ctx, body)
-        mode = ctx.get("persona", {}).get("mode", "auto")
-        paused = store.setting("automation_enabled", "true") != "true"
+        # Skip retrieval for a reply we already know cannot be delivered, while
+        # preserving the intent classification (including real @mentions).
+        reply_suppressed = (
+            human_paused
+            or any(m.get("_human_handled") for m in msg.get("_batch") or [msg])
+            or ctx.get("persona", {}).get("mode") == "off"
+            or ctx.get("sender", {}).get("mode") == "off"
+        )
+        if not send_reply or reply_suppressed:
+            ctx["work_projects"] = project_catalog(
+                self.runtime.work_context.projects(chat_id)
+            )
         my_id = str(getattr(getattr(self.runtime.client, "auth", None), "user_id", ""))
         ctx["self_user_id"] = my_id
         ctx["analysis_mode"] = (
@@ -161,7 +172,7 @@ class WorkEngine:
         knowledge_revision = store.setting("work_knowledge")
         knowledge_context = ""
         knowledge_failed = False
-        if send_reply:
+        if send_reply and not reply_suppressed:
             try:
                 knowledge_context = await self.runtime.knowledge.reply_context(
                     chat_id, body, ctx
@@ -355,7 +366,34 @@ class WorkEngine:
         chat_ids = {c["chat_id"] for c in conversations}
         profiles = {p["key"] for p in personas}
         task_by_id = {t["id"]: t for t in tasks}
-        prompt = control_prompt(text, conversations, personas, tasks, allowed)
+        # Owner-only work material must never enter a plan that can send to a
+        # colleague. Recipient-facing generation uses chat-scoped retrieval.
+        context_revision = self.runtime.knowledge.state()["revision"]
+        history = (
+            owner_query_history(
+                store.control_history(), context_revision, store.job(job_id)
+            )
+            if not allowed
+            else []
+        )
+        search_query = (
+            text + "\n" + "\n".join(item["question"] for item in history[-2:])
+        )
+        work_context = (
+            await self.runtime.work_context.read(search_query[:2000], task_limit=0)
+            if not allowed
+            else None
+        )
+        prompt = control_prompt(
+            text,
+            conversations,
+            personas,
+            tasks,
+            allowed,
+            work_context=work_context,
+            task_total=work["unfinished_total"],
+            history=history,
+        )
         response_schema = deepcopy(CONTROL_SCHEMA)
         action_schema = response_schema["properties"]["actions"]
         action_schema["maxItems"] = 100 if allowed else 0
@@ -444,7 +482,11 @@ class WorkEngine:
                 results.append(item)
             except Exception as error:
                 results.append({"type": kind, "ok": False, "error": str(error)})
-        return {"answer": plan.get("answer", ""), "actions": results}
+        return {
+            "answer": plan.get("answer", ""),
+            "actions": results,
+            "context_revision": context_revision if not allowed else None,
+        }
 
     async def polish_task(self, task, text, instruction=""):
         return await self.polish_reply(task["chat_id"], text, instruction, task)
