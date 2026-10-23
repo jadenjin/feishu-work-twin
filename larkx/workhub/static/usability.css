@@ -1,0 +1,70 @@
+/* Interaction and responsive workspace styles, shared by all views. */
+:root { --muted: #616d80; }
+.stat { text-align: left; color: var(--ink); }
+.stat:hover { background: #f5f7ff; }
+.stat:focus-visible { outline-offset: -4px; }
+.stat-label, .stat-value, .stat-note { display: block; }
+.stat-label { font-size: 13px; color: #526079; }
+.stat-value { font-size: 30px; margin: 10px 0 8px; }
+.stat-note { font-size: 12px; color: #68748a; }
+.task-title { border: 0; padding: 0; background: none; color: inherit; text-align: left; font-size: 14px; overflow-wrap: anywhere; }
+.task-title:hover { color: var(--green); }
+.task-dot { width: 26px; height: 26px; }
+.task-meta, .subtle, label, .badge, .activity-row .meta { font-size: 12px; color: #626f83; }
+.task-meta .badge { color: inherit; }
+.card-head h2 { font-size: 16px; }
+.button, .tab { font-size: 13px; min-height: 38px; }
+.icon-button { min-width: 38px; min-height: 38px; }
+.tabs { overflow-x: auto; gap: 22px; }
+.tab { flex-shrink: 0; }
+.empty { color: #667287; font-size: 13px; }
+.empty p { margin: 8px auto 0; max-width: 36em; }
+.workspace-notice { padding: 12px 16px; margin: 0 0 18px; border: 1px solid #dfd9c6; border-radius: 12px; color: #705c23; background: #fffaf0; font-size: 13px; line-height: 1.7; }
+.workspace-notice.is-error { border-color: #edc5c1; background: #fff4f2; color: #963d33; }
+#conversationLoadStatus:not(:empty) { padding: 0 20px; }
+.chat-list-card .conversation-row p { color: #657287; font-size: 13px; }
+.chat-room-title p, .chat-context summary, .chat-context summary span { color: #627086; font-size: 12px; }
+.wechat-room .message .message-meta { color: #657080; font-size: 12px; }
+.wechat-room .message .message-body, #conversationReply[contenteditable] { font-size: 14px; }
+.chat-compose-toolbar > .subtle, #conversationPolishHint { font-size: 12px; color: #626f83; }
+#conversationReply[contenteditable]:focus-visible { outline: 2px solid var(--green) !important; outline-offset: 5px; }
+#toast { font-size: 13px; }
+body[data-chat-open="true"] main { display: flex; flex-direction: column; height: 100dvh; }
+body[data-chat-open="true"] .topbar, body[data-chat-open="true"] .workspace-notice { flex-shrink: 0; }
+body[data-chat-open="true"] .workspace-notice { margin: 12px 0 0; }
+body[data-chat-open="true"] .content-layout { flex: 1; min-height: 0; display: block; }
+body[data-chat-open="true"] #mainView, #conversationDetail { height: 100%; }
+body[data-chat-open="true"] .wechat-room { height: calc(100% - 20px); min-height: 320px; }
+@media (max-width: 640px) {
+  .sidebar { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); align-items: stretch; inset: auto 0 0; width: 100%; height: auto; padding: 6px 8px max(6px, env(safe-area-inset-bottom)); border: 0; border-top: 1px solid var(--line); }
+  .sidebar .brand, .sidebar .workspace, .sidebar-bottom { display: none; }
+  .sidebar nav { display: contents; }
+  .sidebar .nav { flex-direction: column; gap: 5px; margin: 0; padding: 8px 2px; font-size: 0; border-radius: 10px; }
+  .sidebar .nav::after { content: attr(data-short-label); font-size: 11px; }
+  .sidebar .nav svg { width: 21px; height: 21px; }
+  main { margin-left: 0; padding: 0 14px 155px; }
+  .topbar #date { display: none; }
+  .page-head, body:not([data-view="home"]) .page-head { padding: 20px 0; }
+  .page-head > div { min-width: 0; }
+  .page-head h1 { font-size: 23px; }
+  #toggleAutomation { font-size: 12px; min-height: 38px; }
+  .stat { padding: 16px; }
+  .stat-value { font-size: 28px; }
+  .stat-note { min-height: 38px; }
+  .tabs { gap: 18px; padding: 0 16px; }
+  #assistantLauncher { position: static; flex-direction: column; gap: 5px; width: auto; height: auto; margin: 0; padding: 8px 2px; font-size: 11px; border: 0; border-radius: 10px; }
+  #assistantLauncher > span:not(.launcher-spark) { display: inline; }
+  #assistantLauncher .launcher-spark { width: 21px; height: 21px; font-size: 21px; }
+  #assistantPanel { height: 80dvh; }
+  #toast { bottom: calc(140px + env(safe-area-inset-bottom)); }
+  .row-flex { flex-wrap: wrap; }
+  .row-flex > label { flex: 1; min-width: 110px; }
+  body[data-view="conversations"][data-chat-open="true"] main { padding-bottom: calc(84px + env(safe-area-inset-bottom)); }
+  body[data-chat-open="true"] .wechat-room { height: calc(100% - 10px); margin-top: 10px; }
+  body[data-chat-open="true"] #date { display: none; }
+  .chat-compose-toolbar { gap: 8px; }
+  .chat-compose-toolbar > .subtle { order: 1; flex-basis: 100%; font-size: 12px; }
+  .chat-compose-toolbar .button { font-size: 12px; }
+  .chat-compose-toolbar .button.secondary { margin-left: 0; }
+  .chat-context summary span { float: none; margin-left: 8px; }
+}

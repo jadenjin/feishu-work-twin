@@ -1,6 +1,6 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const state = {view:'home',filter:'open',data:null,chat:null,task:null,chatDrafts:{},chatPolishing:new Set()};
+const state = {view:'home',filter:'unfinished',data:null,chat:null,task:null,chatDrafts:{},chatPolishing:new Set(),conversationQuery:'',rendered:false};
 const viewNames = {home:'工作台',conversations:'会话与记忆',personas:'角色档案',activity:'执行记录',settings:'数字人设置'};
 const statusNames = {open:'待处理',in_progress:'进行中',done:'已完成',needs_attention:'需要你决定',pending:'处理中',sent:'已发送',failed:'失败',uncertain:'待核对',auto:'自动回复',draft:'先留草稿',off:'不自动回复'};
 async function api(path, options={}) {
@@ -10,53 +10,95 @@ async function api(path, options={}) {
   return data;
 }
 const mutation = (method, data) => ({method,body:JSON.stringify(data)});
-function toast(text){$('#toast').textContent=text;$('#toast').classList.add('show');setTimeout(()=>$('#toast').classList.remove('show'),3500);}
-function timeLabel(ts){if(!ts)return '';return new Date(ts.includes('T')?ts:ts*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
+let toastTimer;
+function toast(text){clearTimeout(toastTimer);$('#toast').textContent=text;$('#toast').classList.add('show');toastTimer=setTimeout(()=>$('#toast').classList.remove('show'),4500);}
+function timeLabel(ts){if(!ts)return '';return new Date(typeof ts==='string'&&ts.includes('T')?ts:Number(ts)*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
 function chatName(id){return state.data.conversations.find(c=>c.chat_id===id)?.name || '未关联会话';}
 function humanPauseLabel(c){const seconds=Math.ceil(((c?.human_pause_until||0)*1000-Date.now())/1000);return seconds>0?`人工接管中 · 自动回复暂停 ${seconds} 秒`:'人工接管暂停已结束';}
 function displayContent(text){const v=String(text||'');if(v.startsWith('[图片]'))return '图片';if(v.startsWith('[表情包]'))return '表情包';return v;}
-function empty(title, sub='新的工作事项会出现在这里。'){return `<div class="empty"><div class="empty-icon">✓</div><strong>${esc(title)}</strong></div>`;}
+function empty(title, sub='新的工作事项会出现在这里。'){return `<div class="empty"><div class="empty-icon">✓</div><strong>${esc(title)}</strong><p>${esc(sub)}</p></div>`;}
 function badge(status){return `<span class="badge ${esc(status)}">${esc(statusNames[status]||status)}</span>`;}
+let stateRequest = 0;
+function updateNotice(error=''){
+  const notice=$('#workspaceNotice');
+  notice.hidden=!error&&!!state.data?.status.automation_enabled;
+  notice.classList.toggle('is-error',!!error);
+  notice.textContent=error?(state.data?'工作台连接中断，正在显示上次成功获取的数据。请检查服务后点击刷新。':'暂时无法连接工作台，请确认本地服务已启动后刷新。'):state.data?'自动回复已暂停 · 新回复只生成草稿，你仍可以手动发送。':'';
+  if(error){$('#connectionDot').className='';$('#connectionText').textContent='工作台连接中断';}
+}
+function refreshCurrentView(){
+  if(!state.rendered||state.view==='home'||state.view==='activity')renderView();
+  else if(state.view==='conversations'&&!state.chat)renderConversationList();
+}
+async function withBusy(button, action){
+  if(button.disabled)return;
+  button.disabled=true;button.setAttribute('aria-busy','true');
+  try{return await action();}catch(error){toast(error.message);}
+  finally{button.disabled=false;button.removeAttribute('aria-busy');}
+}
 async function loadState(render=true){
-  state.data=await api('/api/state');
+  const request=++stateRequest;
+  let data;
+  try{data=await api('/api/state');}catch(error){
+    if(request===stateRequest){updateNotice(error);if(!state.data)$('#mainView').innerHTML=empty('暂时无法连接工作台','请确认本地服务已启动，再点击右上角刷新重试。');}
+    throw error;
+  }
+  if(request!==stateRequest)return;
+  state.data=data;updateNotice();
+  if(!$('#toggleAutomation').hasAttribute('aria-busy'))$('#toggleAutomation').disabled=false;
   const {status,tasks,conversations,personas,actions}=state.data;
   $('#connectionDot').className=status.connection==='connected'?'connected':'';
   $('#connectionText').textContent={connected:'飞书已连接',starting:'正在启动',connecting:'正在连接',reconnecting:'正在重连',error:'连接异常'}[status.connection]||status.connection;
   $('#toggleAutomation').textContent=status.automation_enabled?'暂停自动回复':'恢复自动回复';
   $('.tiny-badge').textContent=status.active_calls?`处理 ${status.active_calls} 项中`:status.connection==='connected'?'已就绪':'待连接';
-  const cards=[['等待处理',tasks.filter(t=>t.status==='open'||t.status==='in_progress').length,'需要继续推进的工作','☷'],['需要你决定',tasks.filter(t=>t.status==='needs_attention').length,'异常与需要判断的事项','◇'],['建立联系',personas.filter(p=>p.kind==='person').length,`${conversations.filter(c=>c.kind==='group').length} 个群聊也在这里`,'♧'],['已完成',tasks.filter(t=>t.status==='done').length,`${actions.filter(a=>a.status==='sent').length} 条消息已发出`,'↗']];
-  $('#stats').innerHTML=cards.map(([label,value,note,icon])=>`<div class="stat"><div class="stat-label">${label}</div><span class="stat-icon">${icon}</span><div class="stat-value">${value.toString().padStart(2,'0')}</div></div>`).join('');
+  const cards=[['未完成待办',tasks.filter(t=>t.status!=='done').length,'待处理、进行中与需决定事项','☷','unfinished'],['需要你决定',tasks.filter(t=>t.status==='needs_attention').length,'查看需要判断的事项','◇','needs_attention'],['建立联系',personas.filter(p=>p.kind==='person').length,`${conversations.filter(c=>c.kind==='group').length} 个群聊 · 查看角色档案`,'♧','personas'],['已完成',tasks.filter(t=>t.status==='done').length,'查看已完成的待办','↗','done']];
+  setHtml($('#stats'),cards.map(([label,value,note,icon,target])=>`<button type="button" class="stat" data-stat="${target}"><span class="stat-label">${label}</span><span class="stat-icon" aria-hidden="true">${icon}</span><span class="stat-value">${value}</span><span class="stat-note">${note}</span></button>`).join(''));
   if($('#humanPauseStatus')){const c=conversations.find(c=>c.chat_id===state.chat);$('#humanPauseStatus').textContent=c?.human_pause_until?' · '+humanPauseLabel(c):'';}
   document.querySelectorAll('[data-auto-switch]').forEach(el=>{const p=personas.find(p=>p.key===el.dataset.autoSwitch);if(p&&!el.disabled)el.checked=p.mode==='auto';});
   document.querySelectorAll('[data-auto-status]').forEach(el=>{const p=personas.find(p=>p.key===el.dataset.autoStatus);if(p)el.textContent=p.mode==='auto'?'开启':p.mode==='draft'?'仅草稿':'关闭';});
-  if(render) renderView();
+  if(render||!state.rendered) refreshCurrentView();
 }
 function renderView(){
   if(!state.data)return;
+  state.rendered=true;
   document.body.dataset.view=state.view;
+  document.querySelectorAll('.nav').forEach(button=>{if(button.dataset.view===state.view)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');});
   if(state.view!=='conversations')document.body.dataset.chatOpen='false';
   $('.nav.active')?.classList.remove('active');$(`.nav[data-view="${state.view}"]`).classList.add('active');
   $('#breadcrumb').textContent=viewNames[state.view];
   $('#pageTitle').textContent={home:'工作台',conversations:'会话与记忆',personas:'联系人与角色',activity:'执行记录',settings:'数字人设置'}[state.view];
   ({home:renderHome,conversations:renderConversations,personas:renderPersonas,activity:renderActivity,settings:renderSettings}[state.view])();
 }
-function taskRow(t){return `<div class="task-row"><button class="task-dot ${t.status==='done'?'done':''}" data-done="${t.id}" aria-label="标记完成">${t.status==='done'?'✓':''}</button><div class="task-content"><div class="task-title" data-task="${t.id}">${esc(t.title)}</div><div class="task-meta"><span>${esc(chatName(t.chat_id))}</span><span>·</span><span>${esc(t.due_at||timeLabel(t.created_at))}</span>${t.priority==='high'?'<span class="badge high">优先处理</span>':''}${t.status==='needs_attention'?badge(t.status):''}</div></div><button class="button ghost" data-task="${t.id}">处理 →</button></div>`;}
+function setHtml(element,html){if(element.innerHTML!==html)element.innerHTML=html;}
+function taskRow(t){return `<div class="task-row"><button class="task-dot ${t.status==='done'?'done':''}" data-done="${t.id}" aria-label="${t.status==='done'?'重新打开任务':'标记完成'}">${t.status==='done'?'✓':''}</button><div class="task-content"><button type="button" class="task-title" data-task="${t.id}">${esc(t.title)}</button><div class="task-meta"><span>${esc(chatName(t.chat_id))}</span><span>·</span><span>${esc(t.due_at||timeLabel(t.created_at))}</span>${t.priority==='high'?'<span class="badge high">优先处理</span>':''}${t.status==='needs_attention'?badge(t.status):''}</div></div><button class="button ghost" data-task="${t.id}">处理 →</button></div>`;}
 function renderHome(){
   let tasks=state.data.tasks;
-  const filtered=tasks.filter(t=>state.filter==='all'||(state.filter==='open'?['open','needs_attention'].includes(t.status):t.status===state.filter));
-  $('#mainView').innerHTML=`<div class="card"><div class="card-head"><div><h2>我的待办 <span class="subtle">${tasks.filter(t=>t.status!=='done').length} 项</span></h2></div><button class="button secondary" id="newTask">＋ 添加待办</button></div><div class="tabs">${[['open','待处理'],['in_progress','进行中'],['done','已完成'],['all','全部']].map(([v,n])=>`<button class="tab ${v===state.filter?'active':''}" data-filter="${v}">${n}</button>`).join('')}</div>${filtered.length?filtered.map(taskRow).join(''):empty('暂无待办','明确的工作请求会自动提取到这里。')}</div><div class="card"><div class="card-head"><div><h2>最近的联系</h2></div><button class="button ghost" data-view="conversations">全部会话 →</button></div>${state.data.conversations.slice(0,4).map(conversationRow).join('')||empty('等待新的联系')}</div>${state.data.status.error?`<div class="hint danger-text">${esc(state.data.status.error)}</div>`:''}`;
+  const filtered=tasks.filter(t=>state.filter==='all'||(state.filter==='unfinished'?t.status!=='done':state.filter==='open'?t.status==='open':t.status===state.filter));
+  setHtml($('#mainView'),`<div class="card"><div class="card-head"><div><h2>我的待办 <span class="subtle">${tasks.filter(t=>t.status!=='done').length} 项</span></h2></div><button class="button secondary" id="newTask">＋ 添加待办</button></div><div class="tabs">${[['unfinished','未完成'],['open','待处理'],['in_progress','进行中'],['needs_attention','需决定'],['done','已完成'],['all','全部']].map(([v,n])=>`<button class="tab ${v===state.filter?'active':''}" data-filter="${v}" aria-pressed="${v===state.filter}">${n}</button>`).join('')}</div>${filtered.length?filtered.map(taskRow).join(''):empty('当前分类没有待办','你可以添加待办，或切换分类查看其他事项。')}</div><div class="card"><div class="card-head"><div><h2>最近的联系</h2></div><button class="button ghost" data-view="conversations">全部会话 →</button></div>${state.data.conversations.slice(0,4).map(conversationRow).join('')||empty('等待新的联系','连接飞书后，收到的会话会显示在这里。')}</div>${state.data.status.error?`<div class="hint danger-text">${esc(state.data.status.error)}</div>`:''}`);
 }
 function conversationRow(c){return `<button type="button" class="conversation-row ${state.chat===c.chat_id?'selected':''}" data-chat="${esc(c.chat_id)}"><span class="avatar">${esc(c.kind==='group'?'群':c.name.slice(0,1))}</span><div><h3>${esc(c.name)}${c.kind==='group'?'<span class="badge group">群聊</span>':''}</h3><p>${esc(displayContent(c.last_message)||c.overview||'暂无消息')}</p></div>${c.open_tasks?`<span class="badge">${c.open_tasks} 项待办</span>`:''}</button>`;}
+function renderConversationList(){
+  const query=state.conversationQuery.trim().toLocaleLowerCase();
+  const matches=state.data.conversations.filter(c=>`${c.name} ${c.overview||''}`.toLocaleLowerCase().includes(query));
+  setHtml($('#conversationList'),matches.map(conversationRow).join('')||empty(query?'没有找到匹配的会话':'暂无会话',query?'试试其他姓名或关键词。':'连接飞书后，收到的会话会显示在这里。'));
+  $('#conversationCount').textContent=query?`${matches.length} / ${state.data.conversations.length} 个会话`:`${matches.length} 个会话`;
+}
 function renderConversations(){
   state.chat=null;document.body.dataset.chatOpen='false';
-  $('#mainView').innerHTML=`<div class="card chat-list-card"><div class="card-head"><div><h2>消息</h2></div><span class="subtle">${state.data.conversations.length} 个会话</span></div><div class="list-search"><input id="conversationSearch" aria-label="搜索联系人或群聊" placeholder="搜索联系人或群聊"></div><div id="conversationList">${state.data.conversations.map(conversationRow).join('')||empty('暂无会话')}</div></div>`;
-  $('#conversationSearch').addEventListener('input',e=>{const matches=state.data.conversations.filter(c=>c.name.includes(e.target.value)||(c.overview||'').includes(e.target.value));$('#conversationList').innerHTML=matches.map(conversationRow).join('')||empty('没有找到匹配的会话','试试其他姓名或关键词。');});
+  $('#mainView').innerHTML=`<div class="card chat-list-card"><div class="card-head"><h2>消息</h2><span class="subtle" id="conversationCount"></span></div><div class="list-search"><input id="conversationSearch" type="search" aria-label="搜索联系人或群聊" placeholder="搜索联系人或群聊" value="${esc(state.conversationQuery)}"></div><p id="conversationLoadStatus" class="subtle" role="status"></p><div id="conversationList"></div></div>`;
+  renderConversationList();
+  $('#conversationSearch').addEventListener('input',e=>{state.conversationQuery=e.target.value;renderConversationList();});
 }
 async function selectChat(id){
   if(state.view!=='conversations'){state.view='conversations';renderView();}
-  state.chat=id;
+  const previousChat=$('#conversationMessages')?state.chat:null;
   const c=state.data.conversations.find(c=>c.chat_id===id);if(!c)return;
-  const d=await api(`/api/conversations/${encodeURIComponent(id)}`);
+  state.chat=id;
+  const loading=$('#conversationLoadStatus');
+  if(loading)loading.textContent=`正在打开 ${c.name}…`;
+  let d;
+  try{d=await api(`/api/conversations/${encodeURIComponent(id)}`);}catch(error){if(state.chat===id){state.chat=previousChat;if(loading?.isConnected)loading.textContent='打开失败，请重新选择会话。';}throw error;}
+  finally{if(d&&loading?.isConnected)loading.textContent='';}
   if(state.chat!==id||state.view!=='conversations')return;
   document.body.dataset.chatOpen='true';
   $('#mainView').innerHTML='<div id="conversationDetail"></div>';
@@ -70,7 +112,7 @@ async function selectChat(id){
   if(state.chatRichDrafts[id])replyInput.innerHTML=state.chatRichDrafts[id];else replyInput.textContent=state.chatDrafts[id]||'';
   const saveDraft=()=>{state.chatRichDrafts[id]=replyInput.innerHTML;state.chatDrafts[id]=editorText(replyInput);};
   replyInput.addEventListener('input',saveDraft);
-  replyInput.addEventListener('keydown',e=>{if(e.ctrlKey&&e.key==='Enter'&&!$('#conversationSendButton').disabled){e.preventDefault();$('#conversationSend').requestSubmit($('#conversationSendButton'));}});
+  replyInput.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&!e.isComposing&&e.key==='Enter'&&!$('#conversationSendButton').disabled){e.preventDefault();$('#conversationSend').requestSubmit($('#conversationSendButton'));}});
   let savedRange=null;
   const rememberRange=()=>{const selection=window.getSelection();if(selection.rangeCount&&replyInput.contains(selection.anchorNode))savedRange=selection.getRangeAt(0).cloneRange();};
   ['keyup','mouseup','input'].forEach(event=>replyInput.addEventListener(event,rememberRange));
@@ -165,7 +207,7 @@ function renderPersonas(){
   $('#mainView').innerHTML=`<div class="card"><div class="card-head"><h2>联系人与群的角色档案</h2><span class="subtle">${state.data.personas.length} 份</span></div>${state.data.personas.map(p=>`<div class="persona-row"><span class="avatar">${esc(p.kind==='group'?'群':p.name.slice(0,1))}</span><div><div class="row-flex"><h3>${esc(p.name)}</h3>${autoReplySwitch(p)}</div><p>${esc(p.role||'未设置角色')}</p><p>${esc(p.description||'')}</p><details class="form-inline"><summary class="subtle">编辑角色说明</summary><div class="section-pad">${personaForm(p)}</div></details></div></div>`).join('')||empty('暂无联系人','联系人会从收到的消息中自动建立。')}</div>`;
 }
 function renderActivity(){
-  $('#mainView').innerHTML=`<div class="card"><div class="card-head"><h2>发送与执行记录</h2></div>${state.data.actions.map(a=>`<div class="activity-row"><div class="meta"><span>发给 ${esc(chatName(a.chat_id))} · ${esc(timeLabel(a.created_at))}</span>${badge(a.status)}</div><p>${esc(a.content)}</p>${a.error?`<p class="danger-text">${esc(a.error)}</p>`:''}</div>`).join('')||empty('还没有执行记录','主动发送和自动回复都会留在这里。')}</div>`;
+  setHtml($('#mainView'),`<div class="card"><div class="card-head"><h2>发送与执行记录</h2></div>${state.data.actions.map(a=>`<div class="activity-row"><div class="meta"><span>发给 ${esc(chatName(a.chat_id))} · ${esc(timeLabel(a.created_at))}</span>${badge(a.status)}</div><p>${esc(a.content)}</p>${a.error?`<p class="danger-text">${esc(a.error)}</p>`:''}</div>`).join('')||empty('还没有执行记录','主动发送和自动回复都会留在这里。')}</div>`);
 }
 function renderSettings(){
   $('#mainView').innerHTML=`<div class="card"><div class="card-head"><h2>回复设置</h2></div><div class="section-pad"><form id="settingsForm" class="form-grid"><label>你的角色、工作习惯与回复原则<textarea id="ownRules" rows="10">${esc(state.data.status.own_rules)}</textarea></label><label>回复尾缀<input id="replySuffix" maxlength="200" value="${esc(state.data.status.reply_suffix)}" placeholder="例如：reply by Bot"></label><label>人工接管等待（分钟，0 为关闭）<input id="humanPauseMinutes" type="number" min="0" max="1440" step="0.1" required value="${esc((state.data.status.human_pause_seconds??120)/60)}"></label><label>消息停顿时间（秒）<input id="batchDelay" type="number" min="0.1" max="30" step="0.1" required value="${esc(state.data.status.batch_delay??1.5)}"></label><label>最长等待时间（秒）<input id="batchMaxWait" type="number" min="0.1" max="60" step="0.1" required value="${esc(state.data.status.batch_max_wait??5)}"></label><div><button class="button primary">保存设置</button></div></form><div class="label-heading">当前状态</div><p class="subtle">${esc(state.data.status.rules)}<br>模型：${esc(state.data.status.model||'默认模型')}<br>排队中的消息：${state.data.status.queued_messages}<br>自动回复：${state.data.status.automation_enabled?'运行中':'已暂停，仅生成草稿'}</p></div></div>`;
@@ -192,16 +234,19 @@ async function command(text){
   try{const j=await api('/api/control',mutation('POST',{text}));const result=await waitJob(j.job_id);el.classList.remove('loading');el.textContent=result.answer||'已处理。';for(const action of result.actions||[]){const row=document.createElement('div');row.className='control-result'+(action.ok?'':' error');let label={send_message:'发送消息',create_task:'创建待办',complete_task:'完成任务',update_profile:'更新角色'}[action.type]||action.type;row.textContent=action.ok?`${label}：${action.data.status?statusNames[action.data.status]||action.data.status:'已完成'}`:`${label}：${action.error}`;el.append(row);}await loadState(state.view==='home'||state.view==='activity');}catch(e){el.classList.remove('loading');el.textContent='处理未完成：'+e.message;}finally{$('#controlSubmit').disabled=false;$('#controlThread').scrollTop=$('#controlThread').scrollHeight;if($('#assistantPanel').hidden)$('#assistantUnread').hidden=false;}
 }
 document.addEventListener('click',async e=>{
+  try{
+  const stat=e.target.closest('[data-stat]');if(stat){if(stat.dataset.stat==='personas')state.view='personas';else{state.view='home';state.filter=stat.dataset.stat;}renderView();$('#pageTitle').focus({preventScroll:true});return;}
   const image=e.target.closest('.message-image');if(image){let viewer=$('#imageViewer');if(!viewer){viewer=document.createElement('dialog');viewer.id='imageViewer';viewer.innerHTML='<button class="icon-button" data-close aria-label="关闭图片">×</button><img alt="图片预览">';document.body.append(viewer);}viewer.querySelector('img').src=image.src;viewer.showModal();return;}
-  const nav=e.target.closest('button[data-view]');if(nav){if(state.view!==nav.dataset.view){state.view=nav.dataset.view;renderView();}return;}
+  const nav=e.target.closest('button[data-view]');if(nav){if(!state.data)return;if(state.view!==nav.dataset.view){state.view=nav.dataset.view;renderView();}return;}
   const filter=e.target.closest('[data-filter]');if(filter){state.filter=filter.dataset.filter;renderHome();}
   const task=e.target.closest('[data-task]');if(task)showTask(task.dataset.task);
-  const done=e.target.closest('[data-done]');if(done){const t=state.data.tasks.find(t=>t.id===Number(done.dataset.done));await api(`/api/tasks/${t.id}`,mutation('PATCH',{status:t.status==='done'?'open':'done'}));await loadState();}
+  const done=e.target.closest('[data-done]');if(done){const t=state.data.tasks.find(t=>t.id===Number(done.dataset.done));await withBusy(done,async()=>{await api(`/api/tasks/${t.id}`,mutation('PATCH',{status:t.status==='done'?'open':'done'}));await loadState();});}
   const chat=e.target.closest('[data-chat]');if(chat)await selectChat(chat.dataset.chat);
   const close=e.target.closest('[data-close]');if(close)close.closest('dialog').close();
   const forget=e.target.closest('[data-forget]');if(forget){await api(`/api/memories/${forget.dataset.forget}`,{method:'DELETE'});await selectChat(state.chat);}
   const cmd=e.target.closest('[data-command]');if(cmd)command(cmd.dataset.command);
   if(e.target.closest('#newTask')){$('#newTaskChat').innerHTML='<option value="">不关联会话</option>'+state.data.conversations.map(c=>`<option value="${esc(c.chat_id)}">${esc(c.name)}</option>`).join('');$('#newTaskDialog').showModal();}
+  }catch(error){toast(error.message);}
 });
 document.addEventListener('change',async e=>{
   const group=e.target.closest('[data-group-policy]');
@@ -226,8 +271,8 @@ document.addEventListener('submit',async e=>{
 });
 $('#controlForm').addEventListener('submit',e=>{e.preventDefault();const text=$('#controlText').value.trim();if(!text)return;$('#controlText').value='';command(text);});
 $('#controlText').addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter')$('#controlForm').requestSubmit();});
-$('#refresh').addEventListener('click',()=>loadState().then(()=>toast('已刷新')).catch(e=>toast(e.message)));
-$('#toggleAutomation').addEventListener('click',async()=>{await api('/api/settings',mutation('PATCH',{automation_enabled:!state.data.status.automation_enabled}));await loadState();toast(state.data.status.automation_enabled?'自动回复已恢复':'已暂停自动发送，新回复保留为草稿');});
+$('#refresh').addEventListener('click',e=>withBusy(e.currentTarget,async()=>{await loadState();await refreshChatMessages();toast('已刷新，当前编辑内容已保留');}));
+$('#toggleAutomation').addEventListener('click',e=>withBusy(e.currentTarget,async()=>{await api('/api/settings',mutation('PATCH',{automation_enabled:!state.data.status.automation_enabled}));await loadState();toast(state.data.status.automation_enabled?'自动回复已恢复':'已暂停自动发送，新回复保留为草稿');}));
 $('#taskDone').addEventListener('click',async()=>{await api(`/api/tasks/${state.task.id}`,mutation('PATCH',{status:'done'}));$('#taskDialog').close();await loadState();});
 $('#taskSave').addEventListener('click',async()=>{await api(`/api/tasks/${state.task.id}`,mutation('PATCH',{status:$('#taskStatus').value,priority:$('#taskPriority').value}));await loadState(false);toast('任务状态已保存');});
 $('#taskPolish').addEventListener('click',async()=>{
