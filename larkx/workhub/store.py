@@ -4,7 +4,7 @@ import os
 import hashlib
 import time
 from datetime import datetime
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, func
 from ..storage import Storage
 from ..storage.models import Message
 from .models import Persona, Conversation, Task, Memory, Action, Setting, Job
@@ -615,6 +615,49 @@ class HubStore:
                 record(r)
                 for r in s.query(Task).order_by(desc(Task.created_at)).limit(300).all()
             ]
+
+    def task_counts(self):
+        with self.storage.Session() as session:
+            counts = dict(
+                session.query(Task.status, func.count(Task.id))
+                .group_by(Task.status)
+                .all()
+            )
+            counts["all"] = sum(counts.values())
+            counts["unfinished"] = counts["all"] - counts.get("done", 0)
+            return counts
+
+    def list_page(self, kind, status="all", page=1, page_size=20):
+        model = Task if kind == "tasks" else Action if kind == "actions" else None
+        allowed = (
+            {"all", "unfinished", "open", "in_progress", "needs_attention", "done"}
+            if kind == "tasks"
+            else {"all", "pending", "sent", "failed", "uncertain"}
+        )
+        if model is None or status not in allowed or page < 1 or not 1 <= page_size <= 50:
+            raise ValueError("分页参数无效")
+        with self.storage.Session() as session:
+            query = session.query(model)
+            if status == "unfinished":
+                query = query.filter(Task.status != "done")
+            elif status != "all":
+                query = query.filter(model.status == status)
+            total = query.count()
+            pages = max(1, math.ceil(total / page_size))
+            page = min(page, pages)
+            rows = (
+                query.order_by(desc(model.created_at), desc(model.id))
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+                .all()
+            )
+            return {
+                "items": [record(row) for row in rows],
+                "total": total,
+                "page": page,
+                "pages": pages,
+                "page_size": page_size,
+            }
 
     def save_reply_review(self, msg, reply):
         """One review per message batch; keep owner edits and reuse its work item."""

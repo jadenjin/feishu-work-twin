@@ -128,7 +128,26 @@ def create_app(runtime=None, start_bridge=True):
             "conversations": r.hub.conversations(),
             "personas": r.hub.personas(),
             "actions": r.hub.actions(),
+            "task_counts": r.hub.task_counts(),
         }
+
+    @app.get("/api/tasks/page")
+    async def tasks_page(
+        request: Request,
+        status: str = "unfinished",
+        page: int = Query(1, ge=1),
+        page_size: int = Query(20, ge=1, le=50),
+    ):
+        return hub(request).hub.list_page("tasks", status, page, page_size)
+
+    @app.get("/api/actions/page")
+    async def actions_page(
+        request: Request,
+        status: str = "all",
+        page: int = Query(1, ge=1),
+        page_size: int = Query(20, ge=1, le=50),
+    ):
+        return hub(request).hub.list_page("actions", status, page, page_size)
 
     @app.get("/api/conversations/{chat_id}")
     async def conversation(chat_id: str, request: Request):
