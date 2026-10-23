@@ -333,18 +333,7 @@ class WorkEngine:
                 str(msg["chat_id"]), reply, msg.get("anchor") or None, **targets
             )
         elif reply and send_reply and mode != "off" and (mode == "draft" or paused):
-            store.create_task(
-                {
-                    "title": "审核回复："
-                    + (msg.get("_chat_name") or str(msg["chat_id"])),
-                    "details": (msg.get("content") or "")[:4000],
-                    "chat_id": str(msg["chat_id"]),
-                    "anchor": msg.get("anchor") or "",
-                    "priority": "normal",
-                    "draft_reply": reply,
-                    "status": "needs_attention",
-                }
-            )
+            store.save_reply_review(msg, reply)
         self.runtime.last_analysis = str(msg["chat_id"])
         return result
 

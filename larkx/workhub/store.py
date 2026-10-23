@@ -616,6 +616,59 @@ class HubStore:
                 for r in s.query(Task).order_by(desc(Task.created_at)).limit(300).all()
             ]
 
+    def save_reply_review(self, msg, reply):
+        """One review per message batch; keep owner edits and reuse its work item."""
+        chat_id = str(msg["chat_id"])
+        anchor = msg.get("anchor") or ""
+        sources = [str(m.get("msg_id") or "") for m in msg.get("_batch") or [msg]]
+        marker = (
+            "review:"
+            + hashlib.sha256(
+                json.dumps([chat_id, anchor, sources]).encode()
+            ).hexdigest()
+        )
+        origin = str(msg.get("msg_id") or "")
+        with self.storage.Session() as s:
+            if all(sources) and s.get(Setting, marker):
+                return
+            candidates = (
+                s.query(Task)
+                .filter_by(chat_id=chat_id, anchor=anchor, origin_msg_id=origin)
+                .order_by(Task.id)
+                .all()
+                if origin
+                else []
+            )
+            drafts = [row for row in candidates if row.draft_reply == reply]
+            row = (
+                candidates[0]
+                if len(candidates) == 1
+                else drafts[0]
+                if len(drafts) == 1
+                else None
+            )
+            if row is None:
+                row = Task(
+                    title=("审核回复：" + (msg.get("_chat_name") or chat_id))[:256],
+                    details=(msg.get("content") or "")[:4000],
+                    chat_id=chat_id,
+                    anchor=anchor,
+                    origin_msg_id=origin,
+                    priority="normal",
+                    status="needs_attention",
+                    draft_reply=reply,
+                )
+                s.add(row)
+            elif row.status != "done" and not row.draft_reply:
+                row.draft_reply = reply
+                if row.status == "open":
+                    row.status = "needs_attention"
+                row.updated_at = datetime.now()
+            # Never overwrite an existing draft or reopen an owner-completed task.
+            if all(sources):
+                s.add(Setting(key=marker, value="saved"))
+            s.commit()
+
     def create_task(self, fields):
         with self.storage.Session() as s:
             row = Task(
