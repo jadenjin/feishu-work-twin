@@ -112,7 +112,10 @@ class CodexFailureTests(unittest.IsolatedAsyncioTestCase):
 
                     async def communicate(self, data):
                         inputs.append(data.decode("utf-8"))
-                        output.write_text("OK", encoding="utf-8")
+                        output.write_text(
+                            '{"reply":"OK"}' if "--output-schema" in args else "OK",
+                            encoding="utf-8",
+                        )
                         return None, b""
 
                 return Process()

@@ -196,7 +196,8 @@ class MessageContextTests(unittest.IsolatedAsyncioTestCase):
                     },
                     my_user_id="me",
                 )
-                self.assertTrue(dispatcher.workers["g:"].queue.empty())
+                key = dispatcher.session_key_of({"chat_id": "g", "_account_id": "me"})
+                self.assertTrue(dispatcher.workers[key].queue.empty())
             finally:
                 await self.cancel_workers(dispatcher)
 

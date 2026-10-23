@@ -56,7 +56,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
     async def test_tools_and_annotations(self):
         async with Client(self.server) as client:
             tools = {t.name: t for t in (await client.list_tools()).tools}
-            self.assertEqual(len(tools), 5)
+            self.assertEqual(len(tools), 6)
             self.assertTrue(tools["search_messages"].annotations.read_only_hint)
             self.assertFalse(tools["send_message"].annotations.read_only_hint)
             self.assertTrue(tools["send_message"].annotations.destructive_hint)
